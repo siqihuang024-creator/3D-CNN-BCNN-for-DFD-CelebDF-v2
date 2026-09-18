@@ -1,0 +1,54 @@
+seed: 42
+device: cuda
+data:
+  active_datasets: [DFD]
+  dataset_roots:
+    DFD: E:/PhD/Deepfake Video TCN+BCNN/Datasets/DFD-Kaggle
+    CelebDFv3: E:/PhD/Deepfake Video TCN+BCNN/Datasets/CelebDFv3/CelebDFv3
+  frame_mode: decimate
+  decimate_step: 2
+  face_crop: false
+  clip_length: 32
+  train_clip_strides: [1, 2]
+  eval_clip_stride: 2
+  selection_clips_per_video: 8
+  eval_clips_per_video: 8
+  eval_clip_chunk_size: 4
+  horizontal_flip_probability: 0.5
+  normalize_mean: [0.485, 0.456, 0.406]
+  normalize_std: [0.229, 0.224, 0.225]
+  num_workers: 2
+model:
+  architecture: 3d_cnn
+  input_resize: 256
+  center_crop: 256
+  activation: relu
+  norm: batch
+  conv_channels: [16, 24, 32]
+  temporal_kernel_size: 3
+  conv1_spatial_stride: 1
+  spatial_pool_type: avg
+  spatial_output_size: 4
+  temporal_head: tcn
+  temporal_aggregation: gap
+  temporal_steps: 32
+  feature_dim: 512
+bayesian:
+  hidden_dims: [256, 64]
+  dropout: 0.2
+  prior_std: 0.1
+  rho_init: -5.0
+  observation_std: 1.0
+  kl_weight: 0.0005
+train:
+  run_dir: artifacts/v2/dfd_e6_seed42
+  epochs: 50
+  physical_batch_size: 8
+  gradient_accumulation_steps: 1
+  precision: fp32
+  learning_rate: 0.001
+  lr_decay: 1.0
+  gradient_clip_norm: 5.0
+  calibration_fpr: 0.05
+  mc_samples: 30
+

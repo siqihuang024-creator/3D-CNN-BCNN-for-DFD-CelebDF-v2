@@ -1,0 +1,1531 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3D-CNN + BCNN V2 实验方案</title>
+<style>
+:root{
+  --bg:#ffffff; --fg:#1a1a1a; --muted:#5a6270; --rule:#e2e5ea;
+  --accent:#1f5fa9; --accent-soft:#eef4fb; --code-bg:#f5f6f8; --th-bg:#f0f3f7;
+  --line:#3b4250; --box-bg:#ffffff; --hl:#c2410c; --hl-bg:#fff3ea; --frz-bg:#eef1f5;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#15181d; --fg:#e6e8eb; --muted:#9aa3b0; --rule:#2c313a;
+    --accent:#6fb0f0; --accent-soft:#1c2733; --code-bg:#1d2128; --th-bg:#222731;
+    --line:#aab3c0; --box-bg:#1b1f25; --hl:#fb923c; --hl-bg:#3a2416; --frz-bg:#232830;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#15181d; --fg:#e6e8eb; --muted:#9aa3b0; --rule:#2c313a;
+  --accent:#6fb0f0; --accent-soft:#1c2733; --code-bg:#1d2128; --th-bg:#222731;
+  --line:#aab3c0; --box-bg:#1b1f25; --hl:#fb923c; --hl-bg:#3a2416; --frz-bg:#232830;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC",
+              "Hiragino Sans GB",sans-serif;font-size:16px;line-height:1.75}
+.wrap{max-width:980px;margin:0 auto;padding:48px 16px 96px}
+h1{font-size:1.9rem;line-height:1.3;margin:0 0 .3em;letter-spacing:-.01em}
+h2{font-size:1.4rem;margin:2.6em 0 .6em;padding-top:.7em;border-top:1px solid var(--rule)}
+h3{font-size:1.12rem;margin:1.9em 0 .5em;color:var(--accent)}
+h4{font-size:1rem;margin:1.5em 0 .4em}
+h1+p{color:var(--muted);font-size:.92rem;margin-top:0}
+p,li{overflow-wrap:break-word}
+a{color:var(--accent)}
+hr{border:0;border-top:1px solid var(--rule);margin:2.5em 0}
+code{background:var(--code-bg);padding:.13em .38em;border-radius:4px;
+  font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;font-size:.86em}
+pre{background:var(--code-bg);border:1px solid var(--rule);border-radius:8px;
+  padding:14px 16px;overflow-x:auto;line-height:1.55}
+pre code{background:none;padding:0;font-size:.84rem}
+blockquote{margin:1.4em 0;padding:.7em 1.1em;background:var(--accent-soft);
+  border-left:3px solid var(--accent);border-radius:0 6px 6px 0}
+blockquote p{margin:.4em 0}
+.tablewrap{overflow-x:auto;margin:1.3em 0}
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+th,td{border:1px solid var(--rule);padding:7px 11px;text-align:left;vertical-align:top}
+th{background:var(--th-bg);font-weight:600;white-space:nowrap}
+tbody tr:nth-child(even){background:color-mix(in srgb,var(--th-bg) 45%,transparent)}
+strong{font-weight:650}
+ul,ol{padding-left:1.5em}
+li{margin:.3em 0}
+.toc{background:var(--code-bg);border:1px solid var(--rule);border-radius:8px;
+  padding:12px 20px;margin:1.5em 0;font-size:.92rem}
+.toc ul{margin:.2em 0;padding-left:1.2em}
+.toc>ul{padding-left:.2em;list-style:none}
+/* figures */
+figure.fig{margin:1.8em 0 2em}
+.figscroll{overflow-x:auto}
+figure.fig svg{min-width:760px}
+figcaption{font-size:.88rem;color:var(--muted);margin-top:.6em;line-height:1.65}
+figcaption b{color:var(--fg)}
+.dg{display:block;width:100%;height:auto;font-family:inherit}
+.dg text{fill:var(--fg);font-size:12px}
+.dg .t{font-weight:600}
+.dg .tn{font-weight:400}
+.dg .th{font-weight:700;font-size:12.5px}
+.dg .ts{font-size:11px;fill:var(--muted)}
+.dg .tl{font-size:11px;fill:var(--muted)}
+.dg .tm{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px}
+.dg .hlt{fill:var(--hl)}
+.dg .box{fill:var(--box-bg);stroke:var(--line);stroke-width:1.2}
+.dg .box.hl{fill:var(--hl-bg);stroke:var(--hl);stroke-width:1.7}
+.dg .box.frz{fill:var(--frz-bg);stroke-dasharray:5 3}
+.dg .box.gh{fill:none;stroke:var(--muted);stroke-dasharray:4 3}
+.dg .ln{fill:none;stroke:var(--line);stroke-width:1.3}
+.dg .ln.hl{stroke:var(--hl);stroke-width:1.6}
+.dg .ln.thin{stroke-width:1.1;opacity:.85}
+.dg .ln.dash{stroke-dasharray:5 4}
+.dg .ln.faint{stroke:var(--muted);stroke-width:1;opacity:.6}
+.dg .mk{fill:var(--line)}
+.dg .mk-hl{fill:var(--hl)}
+.dg .cell{fill:var(--hl-bg);stroke:none}
+.dg .face{fill:none;stroke:var(--hl);stroke-width:1.8}
+.dg .dot{fill:var(--line)}
+.dg .dot.hl{fill:var(--hl)}
+.dg .dot.o{fill:var(--bg);stroke:var(--muted);stroke-width:1}
+@media (max-width:640px){
+  .wrap{padding:28px 16px 64px}
+  body{font-size:15px}
+  h1{font-size:1.5rem}
+  table{font-size:.82rem}
+  th,td{padding:6px 8px;white-space:normal}
+}
+@media print{
+  body{background:#fff;color:#000}
+  .wrap{max-width:none;padding:0}
+  h2{break-after:avoid}
+  table,pre,blockquote,figure{break-inside:avoid}
+  figure.fig svg{min-width:0}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1 id="3d-cnn-bcnn-deepfake-v2">3D-CNN + BCNN 视频 Deepfake 检测 —— V2 实验方案</h1>
+<p>2026-09-18 · 第 6 版 · 训练硬件：远程 AutoDL 实例，RTX 3080 Ti 12 GB 显存 / 32 GB 内存 · 对应旧项目 <code>E:\PhD\Deepfake Video 3D-CNN+BCNN</code></p>
+<table>
+<thead>
+<tr>
+<th>版本</th>
+<th>变更</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>初稿</td>
+</tr>
+<tr>
+<td>2</td>
+<td>预处理改正：DFD 整帧、CelebDF++ 人脸裁剪，两者分开</td>
+</tr>
+<tr>
+<td>3</td>
+<td>conv1 恢复 stride 1；显存改为实测；加入 AMP 和输入采样步长消融</td>
+</tr>
+<tr>
+<td>4</td>
+<td>① 按远程 3080 Ti 重新评估<strong>显存、主机内存、计算时长</strong>（第 1 节）；② 发现<strong>评测阶段会爆显存和内存</strong>，列为必改项；③ E7 改用 <strong>MC3-18</strong>（R3D-18 会把时间压到 4 步）；④ Phase A 头统一为单层 Linear；⑤ 新增<strong>逐步运行流程</strong>（第 7 节）；⑥ 新增 10 张结构图和数据流图</td>
+</tr>
+<tr>
+<td>5</td>
+<td>① <strong>时间聚合消融前移为主线实验 E4′</strong>（GAP / Max / Attention / CLS / Flatten），回答"TCN 之后为什么要平均、能不能直接 flatten"（4.5 节）；② 量化 <strong>DFD 人脸只占一个 4×4 池化格的 28%</strong>，E3 之前加一次不训练的池化筛查（4.3 节）；③ 图 5 的参数列改名"本层参数量"，避免和特征维度混淆</td>
+</tr>
+<tr>
+<td><strong>6</strong></td>
+<td>采纳 GPT 对第 5 版的评审：① 开发协议改为 <strong>P0.5（源视频家族不相交）</strong>，不丢数据、仍允许身份重叠（第 2 节）；② 总览和图中的"TCN → GAP"改为"TCN → 选定的时间聚合"；③ 第 9.1 节删掉旧划分的数字，改为按新划分重算；④ Flatten 的推理改为不那么绝对的表述，并加参数受控的 Flatten-小；⑤ E4′ 改为两轮多 seed 选胜者，E3/E4 的关键对比也用 3 个 seed；⑥ E7 使用 E4′ 选定的聚合方式，新增可选的 E7b（整条流水线不见伪造标签）；⑦ 写明方案的准确叫法</td>
+</tr>
+</tbody>
+</table>
+<div class="toc">
+<ul>
+<li><a href="#0">0. 一页看懂</a></li>
+<li><a href="#1-3080-ti-12-gb-32-gb">1. 远程机器评估（3080 Ti 12 GB / 32 GB 内存）</a></li>
+<li><a href="#2">2. 数据协议</a></li>
+<li><a href="#3">3. 预处理与输入</a></li>
+<li><a href="#4">4. 模型架构</a></li>
+<li><a href="#5">5. 三个阶段</a></li>
+<li><a href="#6">6. 实验阶梯</a></li>
+<li><a href="#7">7. 实验怎么做（逐步）</a></li>
+<li><a href="#8">8. 后续消融（主线跑通后）</a></li>
+<li><a href="#9_1">9. 评价指标</a></li>
+<li><a href="#10">10. 需要改动的代码</a></li>
+<li><a href="#11_1">11. 记录规范</a></li>
+<li><a href="#12_1">12. 已知的开放问题</a></li>
+<li><a href="#_1">附录：相邻时间步的重叠，以及"跳步"该放在哪</a></li>
+</ul>
+</div>
+<hr />
+<h2 id="0">0. 一页看懂</h2>
+<p>V1 的结论是完整的负结果：DFD 测试 AUROC 0.4877、CelebDF++ 0.5284，区间都覆盖随机水平。
+诊断排除了解码损坏、seek 保真度、学习率、特征坍缩、人脸检测器、身份数量，
+留下的核心事实是：<strong>训练后的提取器在留出身份上的线性探针 ≈ 随机初始化</strong>。</p>
+<p>V2 改四件有明确技术理由的事：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>改动</th>
+<th>解决什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>clip 长度 8 → 32 帧</td>
+<td>旧设置时间感受野 7 已覆盖 8 帧中的 7 帧，没有剩余的时间结构可学</td>
+</tr>
+<tr>
+<td>2</td>
+<td>去掉时序建模<strong>之前</strong>的 temporal mean，改为 TCN → 时间聚合（GAP 起步，由 E4′ 选定）</td>
+<td>旧结构在建模前就把时间顺序抹平</td>
+</tr>
+<tr>
+<td>3</td>
+<td>每步特征 15488 → 512（<code>spatial_output_size</code> 22→4）</td>
+<td>让每个时间步能进 1D 卷积；贝叶斯头参数降两个数量级</td>
+</tr>
+<tr>
+<td>4</td>
+<td>贝叶斯头加非线性，512→256→64→1</td>
+<td>旧头两层线性无激活，复合后等价于一层线性变换</td>
+</tr>
+</tbody>
+</table>
+<p>准确地说，这套方案是"<strong>有监督表征学习 + 仅用真实视频的贝叶斯异常建模</strong>"：Phase A 用了 real/fake 标签，所以它不是端到端的单类（one-class）检测器（第 5 节）。</p>
+<figure class="fig" id="fig-overview"><div class="figscroll"><svg class="dg" viewBox="0 0 980 300" role="img" aria-label="总体流程：P0.5 划分后先量捷径地板，Phase A 训练提取器，冻结后分别做线性探针和只用真实视频的贝叶斯头" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ov-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="mk" d="M0,0 L10,5 L0,10 z"/></marker><marker id="ov-h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-hl" d="M0,0 L10,5 L0,10 z"/></marker></defs><rect class="box" x="20" y="50" width="140" height="46" rx="6"/><text class="t" x="90.0" y="70.0" text-anchor="middle">DFD</text><text class="ts" x="90.0" y="85.0" text-anchor="middle">整帧 · 3,431 视频</text><rect class="box" x="20" y="126" width="140" height="46" rx="6"/><text class="t" x="90.0" y="146.0" text-anchor="middle">CelebDF++</text><text class="ts" x="90.0" y="161.0" text-anchor="middle">人脸裁剪 · 54,086 视频</text><rect class="box" x="200" y="78" width="150" height="66" rx="6"/><text class="t" x="275.0" y="101.0" text-anchor="middle">P0.5 划分</text><text class="ts" x="275.0" y="116.0" text-anchor="middle">源视频家族不相交</text><text class="ts" x="275.0" y="130.0" text-anchor="middle">70 / 15 / 15</text><polyline class="ln" points="160,73 180,73 180,100 200,100" marker-end="url(#ov-a)"/><polyline class="ln" points="160,149 180,149 180,122 200,122" marker-end="url(#ov-a)"/><rect class="box" x="200" y="236" width="150" height="52" rx="6"/><text class="t" x="275.0" y="259.0" text-anchor="middle">E0S · 捷径地板</text><text class="ts" x="275.0" y="274.0" text-anchor="middle">码率 / 帧数 / 分辨率</text><polyline class="ln" points="275,144 275,236" marker-end="url(#ov-a)"/><text class="tl" x="283" y="194" text-anchor="start">同一划分</text><rect class="box" x="420" y="40" width="180" height="146" rx="6"/><text class="t" x="510.0" y="96.0" text-anchor="middle">Phase A · 表征学习</text><text class="ts" x="510.0" y="111.0" text-anchor="middle">3D-CNN + TCN + Linear</text><text class="ts" x="510.0" y="125.0" text-anchor="middle">real + fake，BCE</text><text class="ts" x="510.0" y="139.0" text-anchor="middle">全部可训练 · AMP</text><polyline class="ln" points="350,111 420,111" marker-end="url(#ov-a)"/><text class="tl" x="385" y="104" text-anchor="middle">clips</text><rect class="box frz" x="640" y="86" width="140" height="54" rx="6"/><text class="t" x="710.0" y="110.0" text-anchor="middle">冻结的提取器</text><text class="ts" x="710.0" y="125.0" text-anchor="middle">3D-CNN + TCN + 聚合</text><polyline class="ln" points="600,113 640,113" marker-end="url(#ov-a)"/><text class="tl" x="620" y="106" text-anchor="middle">best.pt</text><rect class="box" x="820" y="28" width="150" height="62" rx="6"/><text class="t" x="895.0" y="49.0" text-anchor="middle">Phase B · 探针</text><text class="ts" x="895.0" y="64.0" text-anchor="middle">ridge，按身份分折</text><text class="ts" x="895.0" y="78.0" text-anchor="middle">→ 探针 AUROC</text><rect class="box" x="820" y="118" width="150" height="76" rx="6"/><text class="t" x="895.0" y="146.0" text-anchor="middle">Phase C · 贝叶斯头</text><text class="ts" x="895.0" y="161.0" text-anchor="middle">512→256→64→1</text><text class="ts hlt" x="895.0" y="175.0" text-anchor="middle">只用真实视频训练</text><polyline class="ln" points="780,113 800,113 800,59 820,59" marker-end="url(#ov-a)"/><polyline class="ln" points="800,113 800,156 820,156" marker-end="url(#ov-a)"/><text class="tl" x="806" y="106" text-anchor="start">512 维</text><rect class="box" x="640" y="236" width="140" height="52" rx="6"/><text class="t" x="710.0" y="259.0" text-anchor="middle">结果表</text><text class="ts" x="710.0" y="274.0" text-anchor="middle">AUROC · AP · EER</text><polyline class="ln" points="895,194 895,262 780,262" marker-end="url(#ov-a)"/><text class="tl" x="838" y="255" text-anchor="middle">异常分</text><polyline class="ln dash" points="350,262 640,262" marker-end="url(#ov-a)"/><text class="tl" x="495" y="255" text-anchor="middle">地板写进每张结果表</text></svg></div><figcaption><b>图 1 ·</b> 总体流程。两个数据集按 P0.5 划分后，先量出元数据捷径能达到的分数（E0S）；Phase A 用有标签的 real + fake 训练提取器和 TCN；之后提取器冻结（虚线框），Phase B 在它的 512 维特征上拟合线性探针，判断表征本身好不好；Phase C 只用真实视频训练贝叶斯头，输出异常分。时间聚合从 GAP 起步，由 E4′ 选定。</figcaption></figure>
+<hr />
+<h2 id="1-3080-ti-12-gb-32-gb">1. 远程机器评估（3080 Ti 12 GB / 32 GB 内存）</h2>
+<p>V1 在 batch=1、T=8 下跑，资源从来不是问题。V2 把 T 乘 4、batch 乘 4–8，
+而 DFD 是 960×540 整帧——显存、主机内存、训练时长三样都要重新算。</p>
+<p><strong>测量方法</strong>：远程机器我连不上，所以在本地 GPU 上搭了与第 4 节<strong>完全相同</strong>的网络，
+每个配置执行一次完整训练步（前向 + 反向 + Adam 更新），读 <code>torch.cuda.max_memory_allocated</code>。
+显存占用由张量尺寸决定，与显卡型号基本无关，且对 batch 和 T <strong>严格线性</strong>
+（已验证：DFD 在 T=8/16/32 下分别为 0.69 / 1.36 / 2.69 GB），所以大 batch 的数值由 batch 1–2 的实测线性外推。
+表中不含 CUDA context（约 0.4–0.5 GB）和分配器碎片，<strong>12 GB 卡的安全线按 10 GB 计</strong>。
+脚本 <code>vram_probe.py</code> 在本文件夹，<strong>到远程后先跑一次核对</strong>。</p>
+<h3 id="11">1.1 显存</h3>
+<p><strong>训练（Phase A，AMP 混合精度，T=32，conv1 stride 1）</strong></p>
+<table>
+<thead>
+<tr>
+<th>数据集</th>
+<th>batch 1</th>
+<th>主线 batch</th>
+<th>主线占用</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CelebDF++ 256×256</td>
+<td>0.19 GB（实测）</td>
+<td>8</td>
+<td><strong>1.4 GB</strong> ✅</td>
+<td>batch 16 也只要 2.7 GB</td>
+</tr>
+<tr>
+<td>DFD 960×540</td>
+<td>1.44 GB（实测）</td>
+<td>4，梯度累积 2</td>
+<td><strong>5.7 GB</strong> ✅</td>
+<td>batch 8 需 11.3 GB ❌</td>
+</tr>
+<tr>
+<td>DFD，若不用 AMP</td>
+<td>2.69 GB（实测）</td>
+<td>4</td>
+<td>10.7 GB ⚠</td>
+<td>贴着安全线，不采用</td>
+</tr>
+</tbody>
+</table>
+<p><strong>评测（不求梯度）——现有代码会爆</strong></p>
+<p><code>evaluate_3d_bcnn.py</code> 的评测加载器直接用 <code>physical_batch_size</code> 当 batch 大小，而每个样本是<strong>一整个视频的 8 个 clip</strong>。
+V1 的 batch 是 1，所以一直没出问题；V2 把训练 batch 调大后：</p>
+<table>
+<thead>
+<tr>
+<th>数据集</th>
+<th>每个 clip（AMP，实测）</th>
+<th>现有代码一次前向</th>
+<th>占用</th>
+<th>改后（1 个视频/批，每次 ≤4 clip）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CelebDF++</td>
+<td>0.17 GB</td>
+<td>8 视频 × 8 clip = 64 clip</td>
+<td>≈ 10.8 GB ❌</td>
+<td>0.7 GB ✅</td>
+</tr>
+<tr>
+<td>DFD</td>
+<td>1.35 GB</td>
+<td>4 视频 × 8 clip = 32 clip</td>
+<td>≈ 43 GB ❌</td>
+<td>5.4 GB ✅</td>
+</tr>
+</tbody>
+</table>
+<p><strong>必改</strong>：评测与验证一律 1 个视频一批，视频内的 clip 每次最多送 4 个进网络，分数最后再平均（第 10 节）。
+Phase C（<code>train_3d_bcnn.py</code>）的验证加载器同样用 <code>physical_batch_size</code>，同样要改。</p>
+<p><strong>E7（MC3-18，AMP）</strong></p>
+<table>
+<thead>
+<tr>
+<th>数据集</th>
+<th>实测</th>
+<th>外推</th>
+<th>结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CelebDF++</td>
+<td>batch 1 = 1.21 GB，batch 2 = 2.35 GB</td>
+<td>batch 4 ≈ 4.7 GB，batch 8 ≈ 9.2 GB</td>
+<td><strong>batch 4 × 累积 2</strong></td>
+</tr>
+<tr>
+<td>DFD 整帧</td>
+<td>T=8 → 2.33 GB，T=16 → 4.62 GB</td>
+<td>T=32 <strong>每个 clip ≈ 9.2 GB</strong></td>
+<td>❌ <strong>E7 只做 CelebDF++</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="12">1.2 主机内存</h3>
+<p>DataLoader 在 worker 里就把每帧转成 float32（<code>data.py</code> 的 <code>normalize(to_tensor(...))</code>），
+所以一个 clip 在主机内存里是：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>单个 clip</th>
+<th>训练一批</th>
+<th>验证一项（4 clip）</th>
+<th>评测一项（8 clip）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CelebDF++ 256×256</td>
+<td>25 MB</td>
+<td>8 clip = 0.2 GB</td>
+<td>0.1 GB</td>
+<td>0.2 GB</td>
+</tr>
+<tr>
+<td><strong>DFD 960×540</strong></td>
+<td><strong>199 MB</strong></td>
+<td>4 clip = <strong>0.8 GB</strong></td>
+<td><strong>0.8 GB</strong></td>
+<td><strong>1.6 GB</strong></td>
+</tr>
+</tbody>
+</table>
+<p>PyTorch 默认每个 worker 预取 2 批，所以<strong>排队中的数据 ≈ 2 × worker 数 × 每批大小</strong>。DFD：</p>
+<table>
+<thead>
+<tr>
+<th>worker 数</th>
+<th>训练队列</th>
+<th>评测队列（改后：1 视频/批）</th>
+<th>评测队列（现有代码：4 视频/批）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2</td>
+<td>3.2 GB</td>
+<td>6.4 GB</td>
+<td>25.5 GB ❌</td>
+</tr>
+<tr>
+<td>4</td>
+<td>6.4 GB</td>
+<td>12.7 GB</td>
+<td>51 GB ❌</td>
+</tr>
+<tr>
+<td>8</td>
+<td>12.7 GB</td>
+<td>25.5 GB ❌</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>再加每个 worker 自身约 1 GB（V1 在 DFD 上实测每 worker 0.6–1.2 GB）和主进程 3–4 GB。结论：</p>
+<ol>
+<li><strong>评测改成 1 视频/批</strong>之后，DFD 用 4 个 worker 是安全的（≈ 12.7 + 4 + 4 ≈ 21 GB）。</li>
+<li><strong>推荐（非必须）</strong>：worker 只返回 uint8 张量，归一化挪到 GPU 上做。主机内存和 PCIe 传输都降为 1/4，
+   8 个 worker 也安全。改动只在 <code>data.py</code> 的最后一步和训练循环的第一步。</li>
+<li>远程第一次跑时开着 <code>free -g</code> 看峰值；Linux 内存耗尽会直接杀掉进程，训练白跑。</li>
+</ol>
+<h3 id="13">1.3 计算量与训练时长</h3>
+<p>每个 clip 的前向计算量（三层卷积，单位 GMAC；训练约为前向的 3 倍）：</p>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>GMAC / clip</th>
+<th>相对 CelebDF++</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CelebDF++，T=32</td>
+<td>26.4</td>
+<td>1×</td>
+</tr>
+<tr>
+<td>DFD，T=8，stride 1（E0；与 V1 相同）</td>
+<td>56.8</td>
+<td>2.2×</td>
+</tr>
+<tr>
+<td><strong>DFD，T=32，stride 1（E1–E4）</strong></td>
+<td><strong>227</strong></td>
+<td><strong>8.6×</strong></td>
+</tr>
+<tr>
+<td>DFD，T=32，conv1 stride 2（A12）</td>
+<td>54.8</td>
+<td>2.1×</td>
+</tr>
+</tbody>
+</table>
+<p><strong>唯一的实测参照</strong>：V1 的 DFD 整帧（T=8，也就是上表第二行）在租用机器上记录为约 <strong>10 分钟/epoch</strong>
+（每 epoch 2000 个 clip；当时的 GPU 型号没有记录）。E1–E4 的 DFD 计算量是它的 4 倍：</p>
+<ul>
+<li>若受 GPU 算力限制：约 40 分钟/epoch，<strong>60 epoch ≈ 40 小时/次</strong>，再加每 epoch 的验证。</li>
+<li>若受解码限制（1080p H.264、关键帧稀疏、每个 clip 要 seek）：取决于 worker 数，需实测。</li>
+</ul>
+<p>CelebDF++ 的计算量是 DFD 的 1/8.6，视频又是 256×256 小文件，预计每次几个小时。</p>
+<p><strong>本地测得的单步耗时不作数</strong>：笔记本 GPU 在显存紧张时会慢一个数量级，同一配置两次测量相差 10 倍。
+<strong>远程第一件事就是实测</strong>（第 7 节步骤 ①）：跑 <code>scripts/benchmark_loader.py</code> 测读取速度，再跑 E1-DFD 两个 epoch 计时，
+同时看 <code>nvidia-smi</code> 的 GPU 利用率。</p>
+<p><strong>决策规则</strong>（DFD 单次训练预计超过约 24 小时时）：</p>
+<table>
+<thead>
+<tr>
+<th>现象</th>
+<th>瓶颈</th>
+<th>处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPU 利用率接近 100%</td>
+<td>算力</td>
+<td>DFD 启用 A12（conv1 stride 2），计算量降 4.1 倍，回到 V1 的量级</td>
+</tr>
+<tr>
+<td>GPU 利用率低、CPU 满</td>
+<td>解码</td>
+<td>加 worker（需先做 uint8 改动）；stride 2 帮不上忙</td>
+</tr>
+<tr>
+<td>两者都救不回来</td>
+<td>—</td>
+<td>DFD 只跑 E0、E1、E4（E2、E3 的归因在 CelebDF++ 上完成）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="14">1.4 结论</h3>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>决定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>conv1</td>
+<td>两个数据集都 <strong>stride 1</strong>，模型结构完全一致</td>
+</tr>
+<tr>
+<td>数值精度</td>
+<td>Phase A 全部 <strong>AMP</strong>（从 E0 起，避免中途换精度成为混杂变量）；Phase C 用 fp32</td>
+</tr>
+<tr>
+<td>batch</td>
+<td>CelebDF++ <strong>8</strong>；DFD <strong>4 × 梯度累积 2</strong>，等效 8</td>
+</tr>
+<tr>
+<td>评测</td>
+<td><strong>1 个视频/批，每次前向 ≤4 个 clip</strong>（必改）</td>
+</tr>
+<tr>
+<td>DataLoader</td>
+<td>DFD 起步 4 个 worker；推荐 uint8 传输、GPU 上归一化</td>
+</tr>
+<tr>
+<td>E7</td>
+<td>只做 CelebDF++，batch 4 × 累积 2</td>
+</tr>
+<tr>
+<td>训练时长</td>
+<td>远程先实测，再按上表决定 DFD 的阶梯走几步</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2">2. 数据协议</h2>
+<h3 id="21-p05">2.1 本阶段采用 P0.5（开发协议）</h3>
+<table>
+<thead>
+<tr>
+<th>协议</th>
+<th>规则</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P0</td>
+<td>视频级不相交；允许同一身份跨 split</td>
+<td>仅作对照：量化"同源内容泄漏"会把分数抬高多少</td>
+</tr>
+<tr>
+<td><strong>P0.5</strong></td>
+<td><strong>源视频家族不相交</strong>：一个真实视频和由它生成的所有伪造视频绑定在同一个 split；<strong>允许同一身份跨 split</strong></td>
+<td><strong>本阶段全部实验</strong></td>
+</tr>
+<tr>
+<td>P1</td>
+<td>身份不相交 + donor 规则（V1 用的协议）</td>
+<td>扩充数据集后的正式实验</td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么不用 P1</strong>：数据量。DFD 在 P1 下训练只剩 20 个身份、val/test 各 4 个，
+donor 规则还要丢掉 36% 的 DFD 伪造视频和 27% 的 CelebDF++ 伪造视频。</p>
+<p><strong>为什么不用 P0</strong>：每个伪造视频都是从某一个真实视频生成的，和它共享背景、服装、光照和镜头运动。
+CelebDF++ 里平均（中位数）<strong>84 个</strong>伪造视频共享同一个源视频（最多 244 个），DFD 是 9 个。
+P0 按视频随机划分时，一个测试伪造视频的这些"兄弟"约 70% 落在训练集，模型可以靠记住背景拿分。</p>
+<p><strong>P0.5 的代价是零</strong>：</p>
+<ul>
+<li>manifest 里已经有 <code>source_clip</code> 列，<strong>100% 的伪造视频都能对上它的源真实视频</strong>
+  （DFD 3,068 个、CelebDF++ 53,196 个全部匹配；三类伪造方法的命名都能解析）。</li>
+<li>每个视频恰好属于一个家族，<strong>一个视频都不丢</strong>。DFD 363 个家族（358 个带伪造视频）；
+  CelebDF++ 890 个家族，其中 300 个 YouTube 真实视频没有伪造视频，各自单独成一个家族。</li>
+<li>仍然<strong>允许身份重叠</strong>：同一个人的其他视频、以及 donor 的脸，都可能出现在别的 split——这和放弃 P1 的初衷一致。</li>
+</ul>
+<p>划分方法：按家族分层随机划分 70/15/15（CelebDF++ 的网络视频和 YouTube 视频分开分层），同一家族的所有 clip 都在同一个 split。</p>
+<p><strong>manifest 在本地生成、提交到仓库，远程只 <code>git pull</code></strong>。README 已说明原因：
+划分由扫描到的视频文件决定，远程少一个文件就会生成不同的划分，两台机器的结果从此不可比。</p>
+<h3 id="22-e0s">2.2 身份重叠的代价仍要先量化（E0S，不可跳过）</h3>
+<p>P0.5 去掉了同源内容泄漏，但身份重叠还在：测试集里某个人的脸，可能在训练集的其他视频里出现过；
+V1 那个后来作废的 0.7773，正是 donor 身份泄漏造成的。元数据捷径也仍然存在——
+V1 严格协议测试集上，CelebDF++ 码率 0.783（方向调整后）、帧数 0.895、帧宽 0.924。</p>
+<p><strong>判据</strong>：后面任何模型分数，必须同时高于（a）随机初始化探针分布的上沿，（b）最强的单项元数据捷径。
+达不到就不算"学到了东西"。</p>
+<p><strong>可选但推荐</strong>：在 CelebDF++ 上把 E0 在 P0 下再跑一次（只要几个小时），和 P0.5 的 E0 对比。
+两者的差就是同源内容泄漏的大小——这是论文里说明"为什么不用 P0"的直接证据。</p>
+<hr />
+<h2 id="3">3. 预处理与输入</h2>
+<h3 id="31-2026-09-03">3.1 两个数据集的输入模式不同（2026-09-03 与导师议定）</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>DFD</strong></th>
+<th><strong>CelebDF++</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>模式</td>
+<td>整帧，像素间隔采样 <code>frame[::2, ::2]</code></td>
+<td>跟踪人脸框：dlib 框 + 81 点对齐，框 ×2.0</td>
+</tr>
+<tr>
+<td>送入网络</td>
+<td><strong>960 × 540</strong>（16:9）</td>
+<td><strong>256 × 256</strong></td>
+</tr>
+<tr>
+<td>帧率（中位）</td>
+<td>24 fps</td>
+<td>30 fps</td>
+</tr>
+<tr>
+<td>依据</td>
+<td>不做人脸检测，避免检测器成为混杂变量</td>
+<td>中位人脸框 129.4 px，×2.0 后落在 128 px，重采样系数 ≈ 0.99</td>
+</tr>
+</tbody>
+</table>
+<p><strong>不要统一成一种</strong>。V1 实验 2 已验证：DFD 换成人脸裁剪反而更差（验证 AUROC 掉到 0.34）。</p>
+<figure class="fig" id="fig-preprocess"><div class="figscroll"><svg class="dg" viewBox="0 0 1000 270" role="img" aria-label="预处理数据流：DFD 像素间隔采样，CelebDF++ 读缓存、对齐、裁剪，两者在时间采样处汇合" xmlns="http://www.w3.org/2000/svg"><defs><marker id="pp-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="mk" d="M0,0 L10,5 L0,10 z"/></marker><marker id="pp-h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-hl" d="M0,0 L10,5 L0,10 z"/></marker></defs><rect class="box" x="20" y="24" width="150" height="52" rx="6"/><text class="t" x="95.0" y="47.0" text-anchor="middle">DFD 原始帧</text><text class="ts" x="95.0" y="62.0" text-anchor="middle">1920×1080 · 24 fps</text><polyline class="ln" points="170,50 260,50" marker-end="url(#pp-a)"/><text class="tm" x="215" y="42" text-anchor="middle">[::2, ::2]</text><rect class="box" x="260" y="24" width="160" height="52" rx="6"/><text class="t" x="340.0" y="47.0" text-anchor="middle">整帧 960×540</text><text class="ts" x="340.0" y="62.0" text-anchor="middle">不插值，保留全部场景</text><rect class="box" x="20" y="120" width="150" height="52" rx="6"/><text class="t" x="95.0" y="143.0" text-anchor="middle">CelebDF++ 原始帧</text><text class="ts" x="95.0" y="158.0" text-anchor="middle">30 fps</text><polyline class="ln" points="170,146 200,146" marker-end="url(#pp-a)"/><rect class="box" x="200" y="120" width="130" height="52" rx="6"/><text class="t" x="265.0" y="143.0" text-anchor="middle">读人脸缓存</text><text class="ts" x="265.0" y="158.0" text-anchor="middle">dlib 框 + 81 点</text><polyline class="ln" points="330,146 355,146" marker-end="url(#pp-a)"/><rect class="box" x="355" y="120" width="110" height="52" rx="6"/><text class="t" x="410.0" y="143.0" text-anchor="middle">眼线对齐</text><text class="ts" x="410.0" y="158.0" text-anchor="middle">按关键点旋转</text><polyline class="ln" points="465,146 490,146" marker-end="url(#pp-a)"/><rect class="box" x="490" y="120" width="130" height="52" rx="6"/><text class="t" x="555.0" y="143.0" text-anchor="middle">框 ×2.0 裁剪</text><text class="ts" x="555.0" y="158.0" text-anchor="middle">缩放到 256×256</text><rect class="box" x="670" y="69" width="150" height="58" rx="6"/><text class="t" x="745.0" y="88.0" text-anchor="middle">时间采样</text><text class="ts" x="745.0" y="103.0" text-anchor="middle">随机起点 · 步长 s</text><text class="ts" x="745.0" y="117.0" text-anchor="middle">取 32 帧</text><polyline class="ln" points="420,50 645,50 645,88 670,88" marker-end="url(#pp-a)"/><polyline class="ln" points="620,146 645,146 645,108 670,108" marker-end="url(#pp-a)"/><polyline class="ln" points="820,98 850,98" marker-end="url(#pp-a)"/><rect class="box" x="850" y="69" width="140" height="58" rx="6"/><text class="t" x="920.0" y="88.0" text-anchor="middle">转张量 + 归一化</text><text class="ts" x="920.0" y="103.0" text-anchor="middle">在 worker 内完成</text><text class="ts" x="920.0" y="117.0" text-anchor="middle">float32</text><polyline class="ln" points="920,127 920,196" marker-end="url(#pp-a)"/><text class="tl" x="928" y="165" text-anchor="start">collate</text><rect class="box" x="850" y="196" width="140" height="52" rx="6"/><text class="t" x="920.0" y="219.0" text-anchor="middle">送入 GPU</text><text class="tm" x="920.0" y="234.0" text-anchor="middle">[B,3,32,H,W]</text><text class="ts" x="830" y="214" text-anchor="end">每个 clip 在主机内存里：</text><text class="ts hlt" x="830" y="232" text-anchor="end">DFD 199 MB · CelebDF++ 25 MB</text></svg></div><figcaption><b>图 2 ·</b> 预处理数据流。DFD 只做像素间隔采样、不做人脸检测；CelebDF++ 读离线人脸缓存后对齐、裁剪。两条路在时间采样处汇合，之后完全相同。张量在 DataLoader 的 worker 里就转成了 float32，所以 DFD 一个 32 帧 clip 在主机内存里占 199 MB，是 CelebDF++ 的 8 倍——这决定了远程机器上 worker 能开几个（第 1.2 节）。</figcaption></figure>
+<h3 id="32">3.2 共用设置</h3>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>取值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>clip 长度 T</strong></td>
+<td><strong>32</strong></td>
+<td>LipForensics 25、FTCN 32、AltFreezing 32</td>
+</tr>
+<tr>
+<td><strong>输入采样步长 s</strong></td>
+<td>主线沿用 V1：训练在 {1, 2} 中随机，评测固定 2</td>
+<td>与 E0 可比；固定步长的对比见 A11</td>
+</tr>
+<tr>
+<td>每视频评测 clip 数</td>
+<td>8，均匀分布，分数取均值</td>
+<td>沿用 V1</td>
+</tr>
+<tr>
+<td>归一化</td>
+<td>ImageNet 均值方差（E7 用 Kinetics 的）</td>
+<td></td>
+</tr>
+<tr>
+<td>水平翻转</td>
+<td>每个 clip 一次决定，p = 0.5</td>
+<td>沿用 V1</td>
+</tr>
+</tbody>
+</table>
+<p>输入采样步长 s 是从原视频每隔几帧取一帧：<strong>送进网络的仍然是 32 帧，但覆盖 32·s 帧的真实时长</strong>，
+网络内部的时间步数不变。它和"在卷积里设时间 stride"（把 32 步压成 16 步）是两回事。</p>
+<table>
+<thead>
+<tr>
+<th>s</th>
+<th>覆盖原视频</th>
+<th>CelebDF++（30 fps）</th>
+<th>DFD（24 fps）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>32 帧</td>
+<td>1.07 s</td>
+<td>1.33 s</td>
+</tr>
+<tr>
+<td>2</td>
+<td>64 帧</td>
+<td>2.13 s</td>
+<td>2.67 s</td>
+</tr>
+<tr>
+<td>3</td>
+<td>96 帧</td>
+<td>3.20 s</td>
+<td>4.00 s</td>
+</tr>
+</tbody>
+</table>
+<p>视频长度不构成限制（全部 57,517 个视频中，短于 96 帧的：CelebDF++ 0.0%，DFD 伪造 1.3%，DFD 真实 0%）。</p>
+<figure class="fig" id="fig-timeaxis"><div class="figscroll"><svg class="dg" viewBox="0 0 980 300" role="img" aria-label="时间轴上的三个杠杆：输入采样步长、3D-CNN 的 7 帧感受野、TCN 的空洞卷积" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ta-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="mk" d="M0,0 L10,5 L0,10 z"/></marker><marker id="ta-h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-hl" d="M0,0 L10,5 L0,10 z"/></marker></defs><text class="t" x="20" y="43" text-anchor="start">原视频</text><text class="ts" x="20" y="59" text-anchor="start">s=2：隔一帧取</text><text class="t" x="20" y="113" text-anchor="start">网络输入</text><text class="ts" x="20" y="129" text-anchor="start">32 帧，画出前 12</text><text class="t" x="20" y="183" text-anchor="start">3D-CNN 输出</text><text class="ts" x="20" y="199" text-anchor="start">每步看 7 个输入步</text><text class="t" x="20" y="253" text-anchor="start">TCN 空洞卷积</text><text class="ts" x="20" y="269" text-anchor="start">d=2：隔一步取</text><polyline class="ln faint" points="160,51 160,110"/><polyline class="ln faint" points="226,51 226,110"/><polyline class="ln faint" points="292,51 292,110"/><polyline class="ln faint" points="358,51 358,110"/><polyline class="ln faint" points="424,51 424,110"/><polyline class="ln faint" points="490,51 490,110"/><polyline class="ln faint" points="556,51 556,110"/><polyline class="ln faint" points="622,51 622,110"/><polyline class="ln faint" points="688,51 688,110"/><polyline class="ln faint" points="754,51 754,110"/><polyline class="ln faint" points="820,51 820,110"/><polyline class="ln faint" points="886,51 886,110"/><polyline class="ln hl thin" points="292,122 490,179"/><polyline class="ln hl thin" points="358,122 490,179"/><polyline class="ln hl thin" points="424,122 490,179"/><polyline class="ln hl thin" points="490,122 490,179"/><polyline class="ln hl thin" points="556,122 490,179"/><polyline class="ln hl thin" points="622,122 490,179"/><polyline class="ln hl thin" points="688,122 490,179"/><polyline class="ln hl thin" points="358,192 490,249"/><polyline class="ln hl thin" points="490,192 490,249"/><polyline class="ln hl thin" points="622,192 490,249"/><circle class="dot" cx="160" cy="46" r="4.5"/><circle class="dot o" cx="193" cy="46" r="3.2"/><circle class="dot" cx="226" cy="46" r="4.5"/><circle class="dot o" cx="259" cy="46" r="3.2"/><circle class="dot" cx="292" cy="46" r="4.5"/><circle class="dot o" cx="325" cy="46" r="3.2"/><circle class="dot" cx="358" cy="46" r="4.5"/><circle class="dot o" cx="391" cy="46" r="3.2"/><circle class="dot" cx="424" cy="46" r="4.5"/><circle class="dot o" cx="457" cy="46" r="3.2"/><circle class="dot" cx="490" cy="46" r="4.5"/><circle class="dot o" cx="523" cy="46" r="3.2"/><circle class="dot" cx="556" cy="46" r="4.5"/><circle class="dot o" cx="589" cy="46" r="3.2"/><circle class="dot" cx="622" cy="46" r="4.5"/><circle class="dot o" cx="655" cy="46" r="3.2"/><circle class="dot" cx="688" cy="46" r="4.5"/><circle class="dot o" cx="721" cy="46" r="3.2"/><circle class="dot" cx="754" cy="46" r="4.5"/><circle class="dot o" cx="787" cy="46" r="3.2"/><circle class="dot" cx="820" cy="46" r="4.5"/><circle class="dot o" cx="853" cy="46" r="3.2"/><circle class="dot" cx="886" cy="46" r="4.5"/><circle class="dot o" cx="919" cy="46" r="3.2"/><circle class="dot" cx="160" cy="116" r="5"/><circle class="dot" cx="160" cy="186" r="5"/><circle class="dot" cx="160" cy="256" r="5"/><circle class="dot" cx="226" cy="116" r="5"/><circle class="dot" cx="226" cy="186" r="5"/><circle class="dot" cx="226" cy="256" r="5"/><circle class="dot hl" cx="292" cy="116" r="5"/><circle class="dot" cx="292" cy="186" r="5"/><circle class="dot" cx="292" cy="256" r="5"/><circle class="dot hl" cx="358" cy="116" r="5"/><circle class="dot hl" cx="358" cy="186" r="5"/><circle class="dot" cx="358" cy="256" r="5"/><circle class="dot hl" cx="424" cy="116" r="5"/><circle class="dot" cx="424" cy="186" r="5"/><circle class="dot" cx="424" cy="256" r="5"/><circle class="dot hl" cx="490" cy="116" r="5"/><circle class="dot hl" cx="490" cy="186" r="5"/><circle class="dot hl" cx="490" cy="256" r="5"/><circle class="dot hl" cx="556" cy="116" r="5"/><circle class="dot" cx="556" cy="186" r="5"/><circle class="dot" cx="556" cy="256" r="5"/><circle class="dot hl" cx="622" cy="116" r="5"/><circle class="dot hl" cx="622" cy="186" r="5"/><circle class="dot" cx="622" cy="256" r="5"/><circle class="dot hl" cx="688" cy="116" r="5"/><circle class="dot" cx="688" cy="186" r="5"/><circle class="dot" cx="688" cy="256" r="5"/><circle class="dot" cx="754" cy="116" r="5"/><circle class="dot" cx="754" cy="186" r="5"/><circle class="dot" cx="754" cy="256" r="5"/><circle class="dot" cx="820" cy="116" r="5"/><circle class="dot" cx="820" cy="186" r="5"/><circle class="dot" cx="820" cy="256" r="5"/><circle class="dot" cx="886" cy="116" r="5"/><circle class="dot" cx="886" cy="186" r="5"/><circle class="dot" cx="886" cy="256" r="5"/><text class="t" x="945" y="50" text-anchor="middle">…</text><text class="t" x="930" y="120" text-anchor="middle">…</text><text class="t" x="930" y="190" text-anchor="middle">…</text><text class="t" x="930" y="260" text-anchor="middle">…</text><text class="ts hlt" x="652" y="216" text-anchor="start">z5 看输入 t=2…8（原视频 13 帧）</text><text class="ts hlt" x="600" y="282" text-anchor="middle">h5 取 z3、z5、z7</text></svg></div><figcaption><b>图 3 ·</b> 时间轴上的三个杠杆。第 1→2 行：输入采样步长 s 决定 32 帧覆盖多长的真实时间（s=2 时覆盖 64 帧），网络内部仍是 32 个时间步。第 2→3 行：三层 3D 卷积让每个输出步看 7 个相邻的输入步，相邻输出步大量重叠，但相隔 7 步以上就互不相交。第 3→4 行：TCN 的空洞卷积隔步取值，不减少时间步就把视野拉远（这里只画 d=2 那一层的取法，两层如何叠加见图 7）。</figcaption></figure>
+<hr />
+<h2 id="4">4. 模型架构</h2>
+<h3 id="41-v1-v2">4.1 V1 → V2 到底改了哪里</h3>
+<p>Stage 1–3 的三层 3D 卷积<strong>逐层不变</strong>（通道 16→24→32、核 (3,5,5)、AvgPool (1,4,4)/(1,2,2)、BatchNorm3d、ReLU、全部 stride 1）。
+改动全部在 stage 3 之后：</p>
+<figure class="fig" id="fig-tail"><div class="figscroll"><svg class="dg" viewBox="0 0 1000 215" role="img" aria-label="V1 与 V2 在 stage 3 之后的区别：V1 先对时间求平均，V2 保留时间步交给 TCN 后才平均" xmlns="http://www.w3.org/2000/svg"><defs><marker id="tl-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="mk" d="M0,0 L10,5 L0,10 z"/></marker><marker id="tl-h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-hl" d="M0,0 L10,5 L0,10 z"/></marker></defs><rect class="box" x="20" y="40" width="120" height="150" rx="6"/><text class="t" x="80.0" y="105.0" text-anchor="middle">Stage 1–3</text><text class="ts" x="80.0" y="120.0" text-anchor="middle">两者完全相同</text><text class="ts" x="80.0" y="134.0" text-anchor="middle">3D 卷积 ×3</text><text class="th" x="150" y="34" text-anchor="start">V1 · E0–E2</text><polyline class="ln" points="140,76 240,76" marker-end="url(#tl-a)"/><text class="tm" x="190" y="68" text-anchor="middle">[B,32,T,26,26]</text><rect class="box hl" x="240" y="52" width="120" height="48" rx="6"/><text class="t" x="300.0" y="73.0" text-anchor="middle">mean(T)</text><text class="ts hlt" x="300.0" y="88.0" text-anchor="middle">时间在此抹掉</text><polyline class="ln" points="360,76 450,76" marker-end="url(#tl-a)"/><text class="tm" x="405" y="68" text-anchor="middle">[B,32,26,26]</text><rect class="box" x="450" y="52" width="100" height="48" rx="6"/><text class="t" x="500.0" y="73.0" text-anchor="middle">2D 池化</text><text class="ts" x="500.0" y="88.0" text-anchor="middle">→ 22×22</text><polyline class="ln" points="550,76 640,76" marker-end="url(#tl-a)"/><text class="tm" x="595" y="68" text-anchor="middle">[B,32,22,22]</text><rect class="box" x="640" y="52" width="110" height="48" rx="6"/><text class="t" x="695.0" y="73.0" text-anchor="middle">BN2d + 展平</text><text class="ts" x="695.0" y="88.0" text-anchor="middle">15488 维</text><polyline class="ln" points="750,76 840,76" marker-end="url(#tl-a)"/><text class="tm" x="795" y="68" text-anchor="middle">[B,15488]</text><rect class="box" x="840" y="52" width="70" height="48" rx="6"/><text class="t" x="875.0" y="80.0" text-anchor="middle">Linear</text><polyline class="ln" points="910,76 970,76" marker-end="url(#tl-a)"/><text class="tl" x="940" y="68" text-anchor="middle">logit</text><text class="th" x="150" y="128" text-anchor="start">V2 · E4</text><polyline class="ln" points="140,166 240,166" marker-end="url(#tl-a)"/><text class="tm" x="190" y="158" text-anchor="middle">[B,32,T,26,26]</text><rect class="box" x="240" y="142" width="120" height="48" rx="6"/><text class="t" x="300.0" y="163.0" text-anchor="middle">3D 池化 (T,4,4)</text><text class="ts" x="300.0" y="178.0" text-anchor="middle">只压空间</text><polyline class="ln" points="360,166 450,166" marker-end="url(#tl-a)"/><text class="tm" x="405" y="158" text-anchor="middle">[B,32,T,4,4]</text><rect class="box" x="450" y="142" width="100" height="48" rx="6"/><text class="t" x="500.0" y="163.0" text-anchor="middle">BN3d + 重排</text><text class="ts" x="500.0" y="178.0" text-anchor="middle">每步 512 维</text><polyline class="ln" points="550,166 620,166" marker-end="url(#tl-a)"/><text class="tm" x="585" y="158" text-anchor="middle">[B,T,512]</text><rect class="box hl" x="620" y="142" width="90" height="48" rx="6"/><text class="t" x="665.0" y="163.0" text-anchor="middle">TCN ×2</text><text class="ts" x="665.0" y="178.0" text-anchor="middle">d = 1, 2</text><polyline class="ln" points="710,166 780,166" marker-end="url(#tl-a)"/><text class="tm" x="745" y="158" text-anchor="middle">[B,T,512]</text><rect class="box" x="780" y="142" width="66" height="48" rx="6"/><text class="t" x="813.0" y="163.0" text-anchor="middle">GAP(T)</text><text class="ts" x="813.0" y="178.0" text-anchor="middle">最后才平均</text><polyline class="ln" points="846,166 910,166" marker-end="url(#tl-a)"/><text class="tm" x="878" y="158" text-anchor="middle">[B,512]</text><rect class="box" x="910" y="142" width="66" height="48" rx="6"/><text class="t" x="943.0" y="170.0" text-anchor="middle">Linear</text></svg></div><figcaption><b>图 4 ·</b> V1 与 V2 的唯一结构区别在 stage 3 之后（箭头上是流过的张量形状）。V1 先对时间求平均，再把空间压到 22×22，得到 15488 维；V2 只把空间压到 4×4、保留 32 个时间步，每步恰好 32×4×4 = 512 维，交给 TCN 之后才对时间求平均。</figcaption></figure>
+<h3 id="42-e4">4.2 E4 主模型逐层</h3>
+<p><strong>通道数 C 和时间步 T 在这里恰好都是 32</strong>，张量一律写成 <code>[B, C, T, H, W]</code>，读的时候注意第 2 维是通道、第 3 维是时间。</p>
+<figure class="fig" id="fig-e4"><div class="figscroll"><svg class="dg" viewBox="0 0 980 530" role="img" aria-label="E4 主模型逐层张量形状，CelebDF++ 与 DFD 两列对照，自适应池化后形状相同" xmlns="http://www.w3.org/2000/svg"><defs><marker id="e4-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="mk" d="M0,0 L10,5 L0,10 z"/></marker><marker id="e4-h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-hl" d="M0,0 L10,5 L0,10 z"/></marker></defs><text class="th" x="175" y="28" text-anchor="middle">层 / 运算</text><text class="th" x="470" y="28" text-anchor="middle">CelebDF++ · 256×256</text><text class="th" x="730" y="28" text-anchor="middle">DFD · 960×540</text><text class="th" x="965" y="28" text-anchor="end">本层参数量</text><rect class="box" x="20" y="44" width="310" height="26" rx="6"/><text class="tn" x="175.0" y="61.0" text-anchor="middle">输入 clip</text><text class="tm" x="470" y="61" text-anchor="middle">[B,3,32,256,256]</text><text class="tm" x="730" y="61" text-anchor="middle">[B,3,32,540,960]</text><polyline class="ln" points="175,70 175,78"/><rect class="box" x="20" y="78" width="310" height="26" rx="6"/><text class="tn" x="175.0" y="95.0" text-anchor="middle">Stage 1 · Conv3d 3→16，k(3,5,5)</text><text class="tm" x="470" y="95" text-anchor="middle">[B,16,32,252,252]</text><text class="tm" x="730" y="95" text-anchor="middle">[B,16,32,536,956]</text><text class="tm" x="965" y="95" text-anchor="end">3,616</text><polyline class="ln" points="175,104 175,112"/><rect class="box" x="20" y="112" width="310" height="26" rx="6"/><text class="tn" x="175.0" y="129.0" text-anchor="middle">AvgPool (1,4,4)/(1,2,2) + BN + ReLU</text><text class="tm" x="470" y="129" text-anchor="middle">[B,16,32,125,125]</text><text class="tm" x="730" y="129" text-anchor="middle">[B,16,32,267,477]</text><text class="tm" x="965" y="129" text-anchor="end">32</text><polyline class="ln" points="175,138 175,146"/><rect class="box" x="20" y="146" width="310" height="26" rx="6"/><text class="tn" x="175.0" y="163.0" text-anchor="middle">Stage 2 · Conv3d 16→24</text><text class="tm" x="470" y="163" text-anchor="middle">[B,24,32,121,121]</text><text class="tm" x="730" y="163" text-anchor="middle">[B,24,32,263,473]</text><text class="tm" x="965" y="163" text-anchor="end">28,824</text><polyline class="ln" points="175,172 175,180"/><rect class="box" x="20" y="180" width="310" height="26" rx="6"/><text class="tn" x="175.0" y="197.0" text-anchor="middle">AvgPool + BN + ReLU</text><text class="tm" x="470" y="197" text-anchor="middle">[B,24,32,59,59]</text><text class="tm" x="730" y="197" text-anchor="middle">[B,24,32,130,235]</text><text class="tm" x="965" y="197" text-anchor="end">48</text><polyline class="ln" points="175,206 175,214"/><rect class="box" x="20" y="214" width="310" height="26" rx="6"/><text class="tn" x="175.0" y="231.0" text-anchor="middle">Stage 3 · Conv3d 24→32</text><text class="tm" x="470" y="231" text-anchor="middle">[B,32,32,55,55]</text><text class="tm" x="730" y="231" text-anchor="middle">[B,32,32,126,231]</text><text class="tm" x="965" y="231" text-anchor="end">57,632</text><polyline class="ln" points="175,240 175,248"/><rect class="box" x="20" y="248" width="310" height="26" rx="6"/><text class="tn" x="175.0" y="265.0" text-anchor="middle">AvgPool + BN + ReLU</text><text class="tm" x="470" y="265" text-anchor="middle">[B,32,32,26,26]</text><text class="tm" x="730" y="265" text-anchor="middle">[B,32,32,62,114]</text><text class="tm" x="965" y="265" text-anchor="end">64</text><polyline class="ln" points="175,274 175,282"/><rect class="box hl" x="20" y="282" width="310" height="26" rx="6"/><text class="tn" x="175.0" y="299.0" text-anchor="middle">AdaptiveAvgPool3d (T,4,4) + BN3d</text><text class="tm" x="600" y="299" text-anchor="middle">[B,32,32,4,4]</text><text class="tm" x="965" y="299" text-anchor="end">64</text><polyline class="ln" points="175,308 175,316"/><rect class="box hl" x="20" y="316" width="310" height="26" rx="6"/><text class="tn" x="175.0" y="333.0" text-anchor="middle">重排：每个时间步展平 32×4×4</text><text class="tm" x="600" y="333" text-anchor="middle">[B,32,512]</text><polyline class="ln" points="175,342 175,350"/><rect class="box hl" x="20" y="350" width="310" height="26" rx="6"/><text class="tn" x="175.0" y="367.0" text-anchor="middle">TCN-1 · Conv1d k3 d1 + BN + GELU + 残差</text><text class="tm" x="600" y="367" text-anchor="middle">[B,32,512]</text><text class="tm" x="965" y="367" text-anchor="end">787,968</text><polyline class="ln" points="175,376 175,384"/><rect class="box hl" x="20" y="384" width="310" height="26" rx="6"/><text class="tn" x="175.0" y="401.0" text-anchor="middle">TCN-2 · Conv1d k3 d2 + BN + GELU + 残差</text><text class="tm" x="600" y="401" text-anchor="middle">[B,32,512]</text><text class="tm" x="965" y="401" text-anchor="end">787,968</text><polyline class="ln" points="175,410 175,418"/><rect class="box hl" x="20" y="418" width="310" height="26" rx="6"/><text class="tn" x="175.0" y="435.0" text-anchor="middle">GAP：沿 T 求平均</text><text class="tm" x="600" y="435" text-anchor="middle">[B,512]</text><polyline class="ln" points="175,444 175,452"/><rect class="box" x="20" y="452" width="310" height="26" rx="6"/><text class="tn" x="175.0" y="469.0" text-anchor="middle">Linear 512→1（Phase A 头）</text><text class="tm" x="600" y="469" text-anchor="middle">[B]</text><text class="tm" x="965" y="469" text-anchor="end">513</text><polyline class="ln dash faint" points="350,278 850,278"/><text class="ts" x="20" y="506" text-anchor="start">提取器 90,280 · TCN 1,575,936 · Phase A 头 513 · 合计 1,666,729（参数列中 BN 已计入）</text></svg></div><figcaption><b>图 5 ·</b> E4 主模型逐层张量形状，数据自上而下流动。两个数据集用同一套层和权重，只有输入的 H×W 不同；自适应池化把两边都压到 4×4，虚线以下形状完全相同（合并成中间一列）。橙色为相对 V1 新增或改动的层。张量写作 [B, C, T, H, W]——这里通道数 C 和时间步 T 恰好都是 32，别看混。最右列是这一层的参数量，不是特征维度：TCN 每层 787,968 个参数，进出都是每步 512 维。</figcaption></figure>
+<p>两个补充：</p>
+<ul>
+<li><strong>空间压缩</strong>用 <code>AdaptiveAvgPool3d((T, 4, 4))</code>：指定输出尺寸，窗口自动计算，时间维原样通过。
+  CelebDF++ 的 26×26 → 4×4 时每格平均约 7×7 的区域。</li>
+<li><strong>每个时间步被压缩了多少</strong>：CelebDF++ 从 32×26×26 = 21,632 压到 512（42 倍），
+  DFD 从 32×62×114 = 226,176 压到 512（442 倍）。V1 在这一步几乎不压（22×22）。
+  这一步会不会丢掉判别信息，正是 E2 → E3 要回答的问题。</li>
+</ul>
+<h3 id="43-dfd">4.3 DFD 的特殊问题：人脸只占一个池化格的四分之一</h3>
+<p>DFD 是整帧输入，伪造只发生在人脸上，而人脸在画面里很小。V1 实验 2 缓存了 2,326 个 DFD 视频的 dlib 人脸框，
+中位宽 189 px（1920×1080），在送入网络的 960×540 帧里是 94 px：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>人脸宽（960×540 中）</th>
+<th>占画面面积</th>
+<th>占一个 4×4 池化格</th>
+<th>在 62×114 特征图上</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>最小的 10% 视频</td>
+<td>66 px</td>
+<td>0.8%</td>
+<td><strong>13%</strong></td>
+<td>约 8×8 个位置</td>
+</tr>
+<tr>
+<td>中位</td>
+<td>94 px</td>
+<td>1.7%</td>
+<td><strong>28%</strong></td>
+<td>约 11×11 个位置</td>
+</tr>
+<tr>
+<td>最大的 10% 视频</td>
+<td>135 px</td>
+<td>3.5%</td>
+<td>56%</td>
+<td>约 16×16 个位置</td>
+</tr>
+</tbody>
+</table>
+<figure class="fig" id="fig-dfdpool"><div class="figscroll"><svg class="dg" viewBox="0 0 980 262" role="img" aria-label="按比例绘制：DFD 960×540 帧中中位大小的人脸只占 4×4 池化一个格子的 28%" xmlns="http://www.w3.org/2000/svg"><defs><marker id="dp-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="mk" d="M0,0 L10,5 L0,10 z"/></marker><marker id="dp-h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-hl" d="M0,0 L10,5 L0,10 z"/></marker></defs><rect class="box" x="20" y="40" width="288.0" height="162.0" rx="2"/><rect class="cell" x="92.0" y="80.5" width="72.0" height="40.5" rx="0"/><polyline class="ln faint" points="92.0,40 92.0,202.0"/><polyline class="ln faint" points="164.0,40 164.0,202.0"/><polyline class="ln faint" points="236.0,40 236.0,202.0"/><polyline class="ln faint" points="20,80.5 308.0,80.5"/><polyline class="ln faint" points="20,121.0 308.0,121.0"/><polyline class="ln faint" points="20,161.5 308.0,161.5"/><rect class="face" x="110.0" y="88.0" width="28.2" height="28.2" rx="2"/><text class="th" x="20" y="30" text-anchor="start">4×4 平均（主线）</text><text class="tm" x="164.0" y="224.0" text-anchor="middle">每步 512 维</text><text class="ts hlt" x="164.0" y="242.0" text-anchor="middle">人脸占所在格 28%</text><rect class="box" x="346" y="40" width="288.0" height="162.0" rx="2"/><rect class="cell" x="428.3" y="80.5" width="41.1" height="40.5" rx="0"/><polyline class="ln faint" points="387.1,40 387.1,202.0"/><polyline class="ln faint" points="428.3,40 428.3,202.0"/><polyline class="ln faint" points="469.4,40 469.4,202.0"/><polyline class="ln faint" points="510.6,40 510.6,202.0"/><polyline class="ln faint" points="551.7,40 551.7,202.0"/><polyline class="ln faint" points="592.9,40 592.9,202.0"/><polyline class="ln faint" points="346,80.5 634.0,80.5"/><polyline class="ln faint" points="346,121.0 634.0,121.0"/><polyline class="ln faint" points="346,161.5 634.0,161.5"/><rect class="face" x="436.0" y="88.0" width="28.2" height="28.2" rx="2"/><text class="th" x="346" y="30" text-anchor="start">4×7 平均（A10）</text><text class="tm" x="490.0" y="224.0" text-anchor="middle">每步 896 维</text><text class="ts hlt" x="490.0" y="242.0" text-anchor="middle">人脸占所在格 48%</text><rect class="box" x="672" y="40" width="288.0" height="162.0" rx="2"/><rect class="cell" x="754.3" y="80.5" width="20.6" height="20.2" rx="0"/><rect class="cell" x="774.9" y="80.5" width="20.6" height="20.2" rx="0"/><rect class="cell" x="754.3" y="100.8" width="20.6" height="20.2" rx="0"/><rect class="cell" x="774.9" y="100.8" width="20.6" height="20.2" rx="0"/><polyline class="ln faint" points="692.6,40 692.6,202.0"/><polyline class="ln faint" points="713.1,40 713.1,202.0"/><polyline class="ln faint" points="733.7,40 733.7,202.0"/><polyline class="ln faint" points="754.3,40 754.3,202.0"/><polyline class="ln faint" points="774.9,40 774.9,202.0"/><polyline class="ln faint" points="795.4,40 795.4,202.0"/><polyline class="ln faint" points="816.0,40 816.0,202.0"/><polyline class="ln faint" points="836.6,40 836.6,202.0"/><polyline class="ln faint" points="857.1,40 857.1,202.0"/><polyline class="ln faint" points="877.7,40 877.7,202.0"/><polyline class="ln faint" points="898.3,40 898.3,202.0"/><polyline class="ln faint" points="918.9,40 918.9,202.0"/><polyline class="ln faint" points="939.4,40 939.4,202.0"/><polyline class="ln faint" points="672,60.2 960.0,60.2"/><polyline class="ln faint" points="672,80.5 960.0,80.5"/><polyline class="ln faint" points="672,100.8 960.0,100.8"/><polyline class="ln faint" points="672,121.0 960.0,121.0"/><polyline class="ln faint" points="672,141.2 960.0,141.2"/><polyline class="ln faint" points="672,161.5 960.0,161.5"/><polyline class="ln faint" points="672,181.8 960.0,181.8"/><rect class="face" x="762.0" y="88.0" width="28.2" height="28.2" rx="2"/><text class="th" x="672" y="30" text-anchor="start">8×14 平均</text><text class="tm" x="816.0" y="224.0" text-anchor="middle">每步 3584 维</text><text class="ts hlt" x="816.0" y="242.0" text-anchor="middle">人脸跨 2×2 个格</text></svg></div><figcaption><b>图 6 ·</b> DFD 整帧里人脸有多小（按比例绘制，橙框为中位大小的人脸）。V1 实验 2 缓存的 dlib 人脸框中位宽 189 px（1920×1080），在送入网络的 960×540 帧里是 94 px，只占画面的 1.7%。4×4 平均池化后一个格子对应 240×135 px，人脸只占其中 28%（最小的 10% 视频只占 13%），其余全是背景，伪造痕迹在求平均时被背景稀释。改成 4×7 也只提到 48%；不稀释的办法是取最大值（max 池化，维度不变）或用更细的网格。CelebDF++ 是人脸裁剪，不存在这个问题。</figcaption></figure>
+<p>所以对 DFD 来说，问题不在 512 这个维度，也不主要在长宽比，而在<strong>"平均"把小面积的人脸信号和大面积的背景混在了一起</strong>。
+把网格改成 4×7（A10）只能把人脸占比从 28% 提到 48%。</p>
+<p><strong>处理</strong>：在 E3-DFD 之前做一次<strong>不训练的池化筛查</strong>（6.2 节的实验 S）：取 DFD 最近一个已训练的检查点（E1 或 E2），
+对同一批 stage 3 特征图分别用 平均 4×4、最大值 4×4、平均 4×7、平均 8×14、平均 22×22（V1 参照）池化，各拟合一次线性探针。
+若最大值 4×4 明显好于平均 4×4，DFD 的 E3、E4、E4′ 就改用 <code>AdaptiveMaxPool3d((T,4,4))</code>——
+维度仍是 512，TCN 和后面的部分完全不变。CelebDF++ 保持平均池化，人脸裁剪不存在稀释问题。
+筛查只需要一次前向，不需要训练，代价很小。</p>
+<p>筛查选中最大值池化也<strong>不等于最终结论</strong>：它对局部峰值敏感，既可能抓到人脸上的伪造痕迹，也可能抓到背景噪声或压缩块效应的峰值。所以改用之后，正式的 E3/E4 仍要对照 E0S 的元数据地板，并看训练曲线和特征方差是否稳定。</p>
+<h3 id="44-tcn">4.4 TCN</h3>
+<figure class="fig" id="fig-tcn"><div class="figscroll"><svg class="dg" viewBox="0 0 980 320" role="img" aria-label="TCN 残差块结构，以及两层空洞卷积叠加后输出 t=5 看到输入 t=2 到 8" xmlns="http://www.w3.org/2000/svg"><defs><marker id="tc-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="mk" d="M0,0 L10,5 L0,10 z"/></marker><marker id="tc-h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-hl" d="M0,0 L10,5 L0,10 z"/></marker></defs><text class="tm" x="160" y="30" text-anchor="middle">输入 [B,512,32]</text><polyline class="ln" points="160,36 160,60" marker-end="url(#tc-a)"/><rect class="box" x="80" y="60" width="160" height="44" rx="6"/><text class="t" x="160.0" y="79.0" text-anchor="middle">Conv1d k=3，空洞 d</text><text class="ts" x="160.0" y="94.0" text-anchor="middle">512 → 512 通道</text><polyline class="ln" points="160,104 160,124" marker-end="url(#tc-a)"/><rect class="box" x="80" y="124" width="160" height="36" rx="6"/><text class="t" x="160.0" y="146.0" text-anchor="middle">BatchNorm1d</text><polyline class="ln" points="160,160 160,180" marker-end="url(#tc-a)"/><rect class="box" x="80" y="180" width="160" height="36" rx="6"/><text class="t" x="160.0" y="202.0" text-anchor="middle">GELU</text><polyline class="ln" points="160,216 160,239" marker-end="url(#tc-a)"/><circle class="box" cx="160" cy="252" r="13"/><text class="t" x="160" y="257" text-anchor="middle">+</text><polyline class="ln" points="160,265 160,286" marker-end="url(#tc-a)"/><text class="tm" x="160" y="302" text-anchor="middle">输出 [B,512,32]</text><polyline class="ln hl" points="160,46 280,46 280,252 173,252" marker-end="url(#tc-h)"/><text class="ts hlt" x="288" y="150" text-anchor="start">残差：原样加回</text><text class="th" x="440" y="30" text-anchor="start">两层叠加后的时间视野（以输出 t=5 为例）</text><text class="ts" x="440" y="64" text-anchor="start">输入：3D-CNN 输出 z</text><text class="ts hlt" x="872" y="84" text-anchor="start">t=2…8 共 7 步</text><text class="ts" x="440" y="144" text-anchor="start">TCN-1（d=1）</text><text class="ts hlt" x="872" y="164" text-anchor="start">t=3、5、7</text><text class="ts" x="440" y="224" text-anchor="start">TCN-2（d=2）</text><text class="ts hlt" x="872" y="244" text-anchor="start">t=5</text><polyline class="ln hl thin" points="566,165 650,234"/><polyline class="ln hl thin" points="650,165 650,234"/><polyline class="ln hl thin" points="734,165 650,234"/><polyline class="ln hl thin" points="524,85 566,154"/><polyline class="ln hl thin" points="566,85 566,154"/><polyline class="ln hl thin" points="608,85 566,154"/><polyline class="ln hl thin" points="608,85 650,154"/><polyline class="ln hl thin" points="650,85 650,154"/><polyline class="ln hl thin" points="692,85 650,154"/><polyline class="ln hl thin" points="692,85 734,154"/><polyline class="ln hl thin" points="734,85 734,154"/><polyline class="ln hl thin" points="776,85 734,154"/><circle class="dot" cx="440" cy="80" r="5"/><circle class="dot" cx="482" cy="80" r="5"/><circle class="dot hl" cx="524" cy="80" r="5"/><circle class="dot hl" cx="566" cy="80" r="5"/><circle class="dot hl" cx="608" cy="80" r="5"/><circle class="dot hl" cx="650" cy="80" r="5"/><circle class="dot hl" cx="692" cy="80" r="5"/><circle class="dot hl" cx="734" cy="80" r="5"/><circle class="dot hl" cx="776" cy="80" r="5"/><circle class="dot" cx="818" cy="80" r="5"/><circle class="dot" cx="860" cy="80" r="5"/><circle class="dot" cx="440" cy="160" r="5"/><circle class="dot" cx="482" cy="160" r="5"/><circle class="dot" cx="524" cy="160" r="5"/><circle class="dot hl" cx="566" cy="160" r="5"/><circle class="dot" cx="608" cy="160" r="5"/><circle class="dot hl" cx="650" cy="160" r="5"/><circle class="dot" cx="692" cy="160" r="5"/><circle class="dot hl" cx="734" cy="160" r="5"/><circle class="dot" cx="776" cy="160" r="5"/><circle class="dot" cx="818" cy="160" r="5"/><circle class="dot" cx="860" cy="160" r="5"/><circle class="dot" cx="440" cy="240" r="5"/><circle class="dot" cx="482" cy="240" r="5"/><circle class="dot" cx="524" cy="240" r="5"/><circle class="dot" cx="566" cy="240" r="5"/><circle class="dot" cx="608" cy="240" r="5"/><circle class="dot hl" cx="650" cy="240" r="5"/><circle class="dot" cx="692" cy="240" r="5"/><circle class="dot" cx="734" cy="240" r="5"/><circle class="dot" cx="776" cy="240" r="5"/><circle class="dot" cx="818" cy="240" r="5"/><circle class="dot" cx="860" cy="240" r="5"/></svg></div><figcaption><b>图 7 ·</b> 左：TCN 的一层 = 空洞 Conv1d → BatchNorm1d → GELU，再把输入原样加回（残差）。残差让 TCN 在时序建模帮不上忙时可以退化成恒等映射，不会破坏已有特征。右：第 2 层（d=2）的输出 t=5 取第 1 层的 t=3、5、7，而它们又各取输入的相邻 3 步，合起来看到输入 t=2…8 共 7 步——只占 32 步中的一小段，余量充足。</figcaption></figure>
+<p><strong>3D 卷积已经在时间上卷过了，为什么还要 TCN？</strong> 有部分重叠，但层次不同：
+3D 卷积在 125×125 这种高分辨率上、把时间和空间纠缠在同一个核里混合，每个输出只看 7 帧；
+TCN 作用在"整个画面的 512 维描述子"上，是纯时间操作，能表示 <code>h[t] − h[t−1]</code> 这样的帧间变化——
+temporal mean 做不到，它对 <code>[A,B,C,D]</code> 和 <code>[D,C,B,A]</code> 给出相同结果。
+如果 E4 相对 E3 没有提升，结论就是"7 帧的局部时序卷积已经够了"，这本身也是可以写进论文的发现。</p>
+<blockquote>
+<p><strong>参数量提醒</strong>：TCN 有 157.6 万参数，是提取器（9 万）的 17 倍。若 Phase A 明显过拟合，换瓶颈版
+<code>Conv1d(512→128, k1) → Conv1d(128→128, k3, d1) → Conv1d(128→128, k3, d2) → Conv1d(128→512, k1)</code>，参数 230,272。</p>
+</blockquote>
+<h3 id="45-gap-flatten">4.5 时间聚合：为什么主线用 GAP，为什么不直接 Flatten</h3>
+<p>你的问题：TCN 之后为什么一定要平均？不能保留 32 个时间步、直接 flatten 吗？</p>
+<p><strong>不是必须平均。</strong> V2 的原则是"不能在时序建模<strong>之前</strong>平均"；时序建模<strong>之后</strong>怎样把 32 步汇总成一个向量，
+是一个要用实验回答的问题。所以把它做成主线实验 <strong>E4′</strong>，紧跟在 E4 后面跑，GAP 只是起点。各变体的参数量从 0 到 839 万不等，所以选胜者要用多个 seed（6.2 节）。</p>
+<figure class="fig" id="fig-agg"><div class="figscroll"><svg class="dg" viewBox="0 0 980 400" role="img" aria-label="五种时间聚合方式：前四种对每个时间步用同一套运算，Flatten 给每个时间位置一套独立权重" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ag-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="mk" d="M0,0 L10,5 L0,10 z"/></marker><marker id="ag-h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-hl" d="M0,0 L10,5 L0,10 z"/></marker></defs><text class="th" x="965" y="12" text-anchor="end">聚合部分参数量</text><text class="th" x="20" y="36" text-anchor="start">GAP（主线）</text><text class="ts" x="20" y="52" text-anchor="start">逐步平均</text><rect class="box" x="190" y="24" width="22" height="22" rx="3"/><rect class="box" x="224" y="24" width="22" height="22" rx="3"/><rect class="box" x="258" y="24" width="22" height="22" rx="3"/><rect class="box" x="292" y="24" width="22" height="22" rx="3"/><rect class="box" x="326" y="24" width="22" height="22" rx="3"/><rect class="box" x="360" y="24" width="22" height="22" rx="3"/><rect class="box" x="394" y="24" width="22" height="22" rx="3"/><rect class="box" x="428" y="24" width="22" height="22" rx="3"/><text class="t" x="468" y="40" text-anchor="middle">…</text><polyline class="ln" points="201,46 320,70"/><polyline class="ln" points="235,46 320,70"/><polyline class="ln" points="269,46 320,70"/><polyline class="ln" points="303,46 320,70"/><polyline class="ln" points="337,46 320,70"/><polyline class="ln" points="371,46 320,70"/><polyline class="ln" points="405,46 320,70"/><polyline class="ln" points="439,46 320,70"/><polyline class="ln" points="320,70 560,70" marker-end="url(#ag-a)"/><rect class="box" x="560" y="52" width="170" height="36" rx="6"/><text class="t" x="645.0" y="74.0" text-anchor="middle">平均，权重都是 1/32</text><text class="tm" x="745" y="74" text-anchor="start">→ [B,512]</text><text class="tm" x="965" y="74" text-anchor="end">0</text><text class="th" x="20" y="106" text-anchor="start">Max</text><text class="ts" x="20" y="122" text-anchor="start">逐通道取最大</text><rect class="box" x="190" y="94" width="22" height="22" rx="3"/><rect class="box" x="224" y="94" width="22" height="22" rx="3"/><rect class="box" x="258" y="94" width="22" height="22" rx="3"/><rect class="box" x="292" y="94" width="22" height="22" rx="3"/><rect class="box" x="326" y="94" width="22" height="22" rx="3"/><rect class="box" x="360" y="94" width="22" height="22" rx="3"/><rect class="box" x="394" y="94" width="22" height="22" rx="3"/><rect class="box" x="428" y="94" width="22" height="22" rx="3"/><text class="t" x="468" y="110" text-anchor="middle">…</text><polyline class="ln" points="201,116 320,140"/><polyline class="ln" points="235,116 320,140"/><polyline class="ln" points="269,116 320,140"/><polyline class="ln" points="303,116 320,140"/><polyline class="ln" points="337,116 320,140"/><polyline class="ln" points="371,116 320,140"/><polyline class="ln" points="405,116 320,140"/><polyline class="ln" points="439,116 320,140"/><polyline class="ln" points="320,140 560,140" marker-end="url(#ag-a)"/><rect class="box" x="560" y="122" width="170" height="36" rx="6"/><text class="t" x="645.0" y="144.0" text-anchor="middle">每个通道取最大值</text><text class="tm" x="745" y="144" text-anchor="start">→ [B,512]</text><text class="tm" x="965" y="144" text-anchor="end">0</text><text class="th" x="20" y="176" text-anchor="start">Attention</text><text class="ts" x="20" y="192" text-anchor="start">按内容打分加权</text><rect class="box" x="190" y="164" width="22" height="22" rx="3"/><rect class="box" x="224" y="164" width="22" height="22" rx="3"/><rect class="box" x="258" y="164" width="22" height="22" rx="3"/><rect class="box" x="292" y="164" width="22" height="22" rx="3"/><rect class="box" x="326" y="164" width="22" height="22" rx="3"/><rect class="box" x="360" y="164" width="22" height="22" rx="3"/><rect class="box" x="394" y="164" width="22" height="22" rx="3"/><rect class="box" x="428" y="164" width="22" height="22" rx="3"/><text class="t" x="468" y="180" text-anchor="middle">…</text><polyline class="ln" points="201,186 320,210" style="stroke-width:1.2"/><polyline class="ln" points="235,186 320,210" style="stroke-width:2.8"/><polyline class="ln" points="269,186 320,210" style="stroke-width:1.0"/><polyline class="ln" points="303,186 320,210" style="stroke-width:1.4"/><polyline class="ln" points="337,186 320,210" style="stroke-width:3.4"/><polyline class="ln" points="371,186 320,210" style="stroke-width:1.0"/><polyline class="ln" points="405,186 320,210" style="stroke-width:1.8"/><polyline class="ln" points="439,186 320,210" style="stroke-width:1.0"/><polyline class="ln" points="320,210 560,210" marker-end="url(#ag-a)"/><rect class="box" x="560" y="192" width="170" height="36" rx="6"/><text class="t" x="645.0" y="214.0" text-anchor="middle">Σ αt · ht</text><text class="tm" x="745" y="214" text-anchor="start">→ [B,512]</text><text class="tm" x="965" y="214" text-anchor="end">65,793</text><text class="th" x="20" y="246" text-anchor="start">Transformer CLS</text><text class="ts" x="20" y="262" text-anchor="start">FTCN 的做法</text><rect class="box" x="190" y="234" width="22" height="22" rx="3"/><rect class="box" x="224" y="234" width="22" height="22" rx="3"/><rect class="box" x="258" y="234" width="22" height="22" rx="3"/><rect class="box" x="292" y="234" width="22" height="22" rx="3"/><rect class="box" x="326" y="234" width="22" height="22" rx="3"/><rect class="box" x="360" y="234" width="22" height="22" rx="3"/><rect class="box" x="394" y="234" width="22" height="22" rx="3"/><rect class="box" x="428" y="234" width="22" height="22" rx="3"/><text class="t" x="468" y="250" text-anchor="middle">…</text><rect class="box hl" x="148" y="234" width="22" height="22" rx="3"/><text class="ts" x="159" y="249" text-anchor="middle">C</text><rect class="box gh" x="142" y="230" width="314" height="30" rx="5"/><polyline class="ln" points="159,256 159,280 560,280" marker-end="url(#ag-a)"/><rect class="box" x="560" y="262" width="170" height="36" rx="6"/><text class="t" x="645.0" y="284.0" text-anchor="middle">1 层自注意力，取 CLS</text><text class="tm" x="745" y="284" text-anchor="start">→ [B,512]</text><text class="tm" x="965" y="284" text-anchor="end">2,120,192</text><text class="th" x="20" y="316" text-anchor="start">Flatten</text><text class="ts" x="20" y="332" text-anchor="start">直接拼接</text><rect class="box" x="190" y="304" width="22" height="22" rx="3"/><rect class="box" x="224" y="304" width="22" height="22" rx="3"/><rect class="box" x="258" y="304" width="22" height="22" rx="3"/><rect class="box" x="292" y="304" width="22" height="22" rx="3"/><rect class="box" x="326" y="304" width="22" height="22" rx="3"/><rect class="box" x="360" y="304" width="22" height="22" rx="3"/><rect class="box" x="394" y="304" width="22" height="22" rx="3"/><rect class="box" x="428" y="304" width="22" height="22" rx="3"/><text class="t" x="468" y="320" text-anchor="middle">…</text><polyline class="ln" points="201,326 201,350"/><rect class="box hl" x="184" y="350" width="34" height="16" rx="0"/><polyline class="ln" points="235,326 235,350"/><rect class="box hl" x="218" y="350" width="34" height="16" rx="0"/><polyline class="ln" points="269,326 269,350"/><rect class="box hl" x="252" y="350" width="34" height="16" rx="0"/><polyline class="ln" points="303,326 303,350"/><rect class="box hl" x="286" y="350" width="34" height="16" rx="0"/><polyline class="ln" points="337,326 337,350"/><rect class="box hl" x="320" y="350" width="34" height="16" rx="0"/><polyline class="ln" points="371,326 371,350"/><rect class="box hl" x="354" y="350" width="34" height="16" rx="0"/><polyline class="ln" points="405,326 405,350"/><rect class="box hl" x="388" y="350" width="34" height="16" rx="0"/><polyline class="ln" points="439,326 439,350"/><rect class="box hl" x="422" y="350" width="34" height="16" rx="0"/><text class="tm" x="511" y="350" text-anchor="middle">[B,16384]</text><polyline class="ln" points="462,358 560,358" marker-end="url(#ag-a)"/><rect class="box" x="560" y="338" width="170" height="40" rx="6"/><text class="t" x="645.0" y="362.0" text-anchor="middle">Linear 16384→512</text><text class="tm" x="745" y="362" text-anchor="start">→ [B,512]</text><text class="tm" x="965" y="362" text-anchor="end">8,389,120</text><text class="ts hlt" x="184" y="386" text-anchor="start">每个时间位置一套独立权重（橙色块）</text></svg></div><figcaption><b>图 8 ·</b> TCN 输出的 32 个时间步（这里画 8 个）怎样变成一个 512 维向量。前四种对每个时间步用同一套运算：伪造痕迹出现在第 5 步还是第 21 步，结果一样；Attention 的线粗细表示权重 αt，由每一步的内容决定；Transformer 加一个 CLS 标记（C），让所有步两两互看后取 CLS 的输出。Flatten 给每个时间位置分配一套独立权重——而 clip 的起点是随机采的，“第 t 步”在不同样本之间缺少稳定含义，所以它更容易学到特定位置的捷径，中间向量 16384 维，比 V1 的 15488 维还大。参数受控的 Flatten-小（先把每步降到 64 维，1,081,920 参数）见 4.5 节的表。</figcaption></figure>
+<table>
+<thead>
+<tr>
+<th>聚合方式</th>
+<th>做法</th>
+<th>输出</th>
+<th>聚合部分参数</th>
+<th>依据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GAP（主线起点）</strong></td>
+<td>32 步取平均</td>
+<td><code>[B,512]</code></td>
+<td>0</td>
+<td>LipForensics：MS-TCN 之后接时间全局平均池化</td>
+</tr>
+<tr>
+<td>Max</td>
+<td>每个通道取 32 步中的最大值</td>
+<td><code>[B,512]</code></td>
+<td>0</td>
+<td>检验"伪造是否只是少数时刻的强异常"</td>
+</tr>
+<tr>
+<td>Attention</td>
+<td>小网络（512→128→1）给每步打分 αt，加权求和</td>
+<td><code>[B,512]</code></td>
+<td>65,793</td>
+<td>让模型自己挑重要的时刻</td>
+</tr>
+<tr>
+<td>Transformer CLS</td>
+<td>1 层自注意力（8 头），取 CLS 输出</td>
+<td><code>[B,512]</code></td>
+<td>2,120,192</td>
+<td>FTCN：时间 Transformer + class token</td>
+</tr>
+<tr>
+<td>Flatten</td>
+<td>32×512 拼成 16384，再 Linear 投影到 512</td>
+<td><code>[B,512]</code></td>
+<td>8,389,120</td>
+<td>你的方案，作为对照</td>
+</tr>
+<tr>
+<td>Flatten-小</td>
+<td>每步先线性降到 64 维，32×64 拼成 2048，再投影到 512</td>
+<td><code>[B,512]</code></td>
+<td>1,081,920</td>
+<td>参数受控的 Flatten：区分"Flatten 本身不好"和"只是参数太多"</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Flatten 保留的信息确实最多，这一点没有争议。不作为主线的原因有三个：</strong></p>
+<ol>
+<li><strong>clip 的起点是随机采的。</strong> 同一个伪造痕迹，在这个 clip 里落在第 5 步，在下一个 clip 里可能落在第 21 步，
+   "第 t 步"缺少稳定的含义。Flatten 后接线性层，等于 Σt Wt·ht，每个位置一套权重 Wt；
+   如果各位置的统计规律完全一样，最优解会接近所有 Wt 相等（也就是 GAP）。
+   但这个假设并不严格成立：clip 两端有卷积补零的边界效应，采样方式和视频剪辑规律也可能让不同位置的分布略有差别。
+   所以准确的说法是：<strong>Flatten 更容易学到"特定位置"的捷径，而且需要多得多的参数</strong>。</li>
+<li><strong>维度回到 V1。</strong> 16384 比 V1 的 15488 还大。不投影直接接贝叶斯头，第一层就是 16384×256 ≈ 419 万个权重、
+   839 万个变分参数，V2 好不容易解决的问题又回来了。所以对照组先投影到 512，投影本身就要 839 万参数。</li>
+<li><strong>担心"平均会稀释少数异常时刻"，有更直接的办法。</strong> Max 和 Attention 正是针对这一点的，而且几乎不加参数；
+   Transformer CLS 让所有时刻两两互看，是 FTCN 的做法。这三种都对"痕迹出现在第几步"不敏感。</li>
+</ol>
+<p><strong>你的担心由实验回答，而不是被默认。</strong> E4′ 把 GAP 分别换成另外四种，其余完全不变：</p>
+<ul>
+<li>Max / Attention / CLS 明显好于 GAP → 平均确实稀释了关键时刻，主线改用最好的那个；</li>
+<li>Flatten 明显好于其余所有方式 → 位置相关的信息确实有用（可能来自边界效应或采样方式），值得深究；若 Flatten-小 也同样好，说明好处不只是来自参数多；</li>
+<li>都差不多 → TCN 已经把时间关系编码进了每一步的特征，平均不再损失有用信息。</li>
+</ul>
+<h3 id="46-phase-a-e0e4-linear">4.6 Phase A 头：E0–E4 统一为单层 Linear</h3>
+<p><code>Linear(特征维, 1)</code>：E0–E2 是 15488→1，E3–E4 是 512→1。V1 的 Stage A 头是 15488→512→1 且中间没有激活，
+复合后本来就是一个线性函数，所以换成单层 Linear <strong>不改变函数类</strong>，只是去掉了 793 万个多余参数。
+头在 Phase A 结束后丢弃。</p>
+<h3 id="47-phase-c">4.7 Phase C 贝叶斯头</h3>
+<pre><code>[B, 512] → BayesLinear(512,256) → GELU → Dropout(0.2)
+         → BayesLinear(256, 64) → GELU
+         → BayesLinear( 64,  1)
+</code></pre>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>权重数</th>
+<th>变分参数（μ 与 ρ）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>V1 旧头 15488→512→1</td>
+<td>7,930,881</td>
+<td>15,861,762</td>
+</tr>
+<tr>
+<td><strong>V2 新头 512→256→64→1</strong></td>
+<td><strong>147,841</strong></td>
+<td><strong>295,682</strong></td>
+</tr>
+</tbody>
+</table>
+<p>参数少 53.6 倍。先验 N(0, 0.1²)、<code>rho_init = −5</code>、观测似然沿用 V1。</p>
+<hr />
+<h2 id="5">5. 三个阶段</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Phase A · 表征学习</th>
+<th>Phase B · 表征检验</th>
+<th>Phase C · 贝叶斯异常建模</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>训练什么</td>
+<td>提取器 + TCN + Linear 头</td>
+<td>不训网络，只拟合探针</td>
+<td>只训贝叶斯头</td>
+</tr>
+<tr>
+<td>提取器</td>
+<td>可训练</td>
+<td>冻结</td>
+<td>冻结（含 BN 统计，<code>eval()</code>）</td>
+</tr>
+<tr>
+<td>数据</td>
+<td>real + fake，有标签</td>
+<td>同左</td>
+<td><strong>只有 real</strong></td>
+</tr>
+<tr>
+<td>目标函数</td>
+<td>BCE</td>
+<td>ridge 回归（闭式对偶解）</td>
+<td>ELBO（Pyro SVI）</td>
+</tr>
+<tr>
+<td>精度</td>
+<td>AMP</td>
+<td>fp32</td>
+<td>fp32</td>
+</tr>
+<tr>
+<td>脚本</td>
+<td><code>pretrain_extractor.py</code></td>
+<td><code>scripts/feature_diagnostics.py</code></td>
+<td><code>train_3d_bcnn.py</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>这套方案的准确叫法</strong>：有监督表征学习（Phase A 用了 real/fake 标签）+ 仅用真实视频的贝叶斯异常建模（Phase C）。它不是端到端的单类检测器。作为诊断和可行性研究这样做没问题；但论文若要主张"单类"或"data-agnostic"，需要一个完全没见过伪造标签的表征——方案里只有 E7b 满足（6.2 节）。</p>
+<figure class="fig" id="fig-phasebc"><div class="figscroll"><svg class="dg" viewBox="0 0 980 310" role="img" aria-label="E5 与 E6：都读取选定模型冻结后的 512 维特征，E5 拟合线性探针，E6 只用真实视频训练贝叶斯头" xmlns="http://www.w3.org/2000/svg"><defs><marker id="bc-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="mk" d="M0,0 L10,5 L0,10 z"/></marker><marker id="bc-h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-hl" d="M0,0 L10,5 L0,10 z"/></marker></defs><rect class="box" x="20" y="122" width="110" height="56" rx="6"/><text class="t" x="75.0" y="147.0" text-anchor="middle">一个视频</text><text class="ts" x="75.0" y="162.0" text-anchor="middle">均匀取 8 个 clip</text><polyline class="ln" points="130,150 210,150" marker-end="url(#bc-a)"/><text class="tl" x="170" y="142" text-anchor="middle">每次 ≤4 clip</text><rect class="box frz" x="210" y="106" width="165" height="88" rx="6"/><text class="t" x="292.5" y="140.0" text-anchor="middle">选定模型（冻结）</text><text class="ts" x="292.5" y="155.0" text-anchor="middle">3D-CNN + TCN + 聚合</text><text class="ts" x="292.5" y="169.0" text-anchor="middle">eval()，不回传梯度</text><polyline class="ln" points="375,150 438,150" marker-end="url(#bc-a)"/><text class="tm" x="406" y="142" text-anchor="middle">[8,512]</text><rect class="box" x="438" y="126" width="92" height="48" rx="6"/><text class="t" x="484.0" y="147.0" text-anchor="middle">clip 均值</text><text class="ts" x="484.0" y="162.0" text-anchor="middle">每视频 512 维</text><polyline class="ln" points="530,150 560,150 560,66 600,66" marker-end="url(#bc-a)"/><polyline class="ln" points="560,150 560,234 600,234" marker-end="url(#bc-a)"/><text class="tl" x="552" y="100" text-anchor="end">带标签：real + fake</text><text class="tl hlt" x="552" y="212" text-anchor="end">训练时只用 real</text><rect class="box" x="600" y="30" width="200" height="72" rx="6"/><text class="t" x="700.0" y="56.0" text-anchor="middle">E5 · 线性探针</text><text class="ts" x="700.0" y="71.0" text-anchor="middle">ridge 闭式解，按身份 5 折</text><text class="ts" x="700.0" y="85.0" text-anchor="middle">对照：随机初始化 ×8</text><rect class="box" x="600" y="178" width="200" height="112" rx="6"/><text class="t" x="700.0" y="210.0" text-anchor="middle">E6 · 贝叶斯头</text><text class="ts" x="700.0" y="225.0" text-anchor="middle">BayesLinear 512→256 · GELU</text><text class="ts" x="700.0" y="239.0" text-anchor="middle">BayesLinear 256→64 · GELU</text><text class="ts" x="700.0" y="253.0" text-anchor="middle">BayesLinear 64→1</text><text class="ts" x="700.0" y="267.0" text-anchor="middle">ELBO，Pyro SVI</text><polyline class="ln" points="800,66 840,66" marker-end="url(#bc-a)"/><polyline class="ln" points="800,234 840,234" marker-end="url(#bc-a)"/><rect class="box" x="840" y="40" width="130" height="52" rx="6"/><text class="t" x="905.0" y="63.0" text-anchor="middle">探针 AUROC</text><text class="ts" x="905.0" y="78.0" text-anchor="middle">表征好不好</text><rect class="box" x="840" y="208" width="130" height="52" rx="6"/><text class="t" x="905.0" y="231.0" text-anchor="middle">异常分</text><text class="ts" x="905.0" y="246.0" text-anchor="middle">= −后验均值</text><polyline class="ln dash" points="905,92 905,208"/><text class="tl" x="897" y="154" text-anchor="end">对照判读（5.3 节）</text></svg></div><figcaption><b>图 9 ·</b> E5 与 E6 都读取选定模型（E4 或 E4′ 的胜者）冻结后的 512 维视频特征（每个视频 8 个 clip 的特征取均值；每次前向最多送 4 个 clip，否则 DFD 整帧评测会超显存）。E5 用带标签的特征拟合线性探针，回答“表征本身能不能分开真假”；E6 只用真实视频训练贝叶斯头，异常分取后验均值的相反数。两者对照就是第 5.3 节的判读表。</figcaption></figure>
+<h3 id="53">5.3 判读表</h3>
+<table>
+<thead>
+<tr>
+<th>Phase B 探针</th>
+<th>Phase C BCNN</th>
+<th>结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>高（如 0.85）</td>
+<td>高</td>
+<td>成功</td>
+</tr>
+<tr>
+<td><strong>高（如 0.85）</strong></td>
+<td><strong>低（如 0.53）</strong></td>
+<td><strong>表征没问题，瓶颈在贝叶斯头 / 单类目标函数</strong></td>
+</tr>
+<tr>
+<td>低（如 0.55）</td>
+<td>任意</td>
+<td>表征没学到，调贝叶斯头没有意义</td>
+</tr>
+</tbody>
+</table>
+<p>V1 从未干净地区分过第二行和第三行，因为两个阶段的判据混在一起。</p>
+<hr />
+<h2 id="6">6. 实验阶梯</h2>
+<figure class="fig" id="fig-ladder"><div class="figscroll"><svg class="dg" viewBox="0 0 980 412" role="img" aria-label="实验阶梯 E0 到 E4：每行一次实验的数据流，橙色为相对上一行唯一改动的部件" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ld-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="mk" d="M0,0 L10,5 L0,10 z"/></marker><marker id="ld-h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-hl" d="M0,0 L10,5 L0,10 z"/></marker></defs><text class="th" x="156.0" y="26" text-anchor="middle">输入</text><text class="th" x="306.0" y="26" text-anchor="middle">3D-CNN ×3</text><text class="th" x="456.0" y="26" text-anchor="middle">时间维处理</text><text class="th" x="606.0" y="26" text-anchor="middle">空间池化</text><text class="th" x="756.0" y="26" text-anchor="middle">时序建模</text><text class="th" x="906.0" y="26" text-anchor="middle">输出 → 头</text><text class="th" x="20" y="62" text-anchor="start">E0</text><text class="ts" x="20" y="78" text-anchor="start">V1 基线</text><rect class="box" x="90" y="40" width="132" height="48" rx="6"/><text class="t" x="156.0" y="61.0" text-anchor="middle">T=8 · B=1</text><text class="ts" x="156.0" y="76.0" text-anchor="middle">与 V1 相同</text><polyline class="ln" points="222,64.0 240,64.0" marker-end="url(#ld-a)"/><rect class="box" x="240" y="40" width="132" height="48" rx="6"/><text class="t" x="306.0" y="61.0" text-anchor="middle">stride 1</text><text class="ts" x="306.0" y="76.0" text-anchor="middle">感受野 7 帧</text><polyline class="ln" points="372,64.0 390,64.0" marker-end="url(#ld-a)"/><rect class="box" x="390" y="40" width="132" height="48" rx="6"/><text class="t" x="456.0" y="61.0" text-anchor="middle">mean(T)</text><text class="ts" x="456.0" y="76.0" text-anchor="middle">时间被平均掉</text><polyline class="ln" points="522,64.0 540,64.0" marker-end="url(#ld-a)"/><rect class="box" x="540" y="40" width="132" height="48" rx="6"/><text class="t" x="606.0" y="61.0" text-anchor="middle">2D 池化 22×22</text><text class="ts" x="606.0" y="76.0" text-anchor="middle">每 clip 一张图</text><polyline class="ln" points="672,64.0 690,64.0" marker-end="url(#ld-a)"/><rect class="box gh" x="690" y="40" width="132" height="48" rx="6"/><text class="ts" x="756.0" y="68.0" text-anchor="middle">无</text><polyline class="ln" points="822,64.0 840,64.0" marker-end="url(#ld-a)"/><rect class="box" x="840" y="40" width="132" height="48" rx="6"/><text class="t" x="906.0" y="61.0" text-anchor="middle">15488 维</text><text class="ts" x="906.0" y="76.0" text-anchor="middle">Linear → 1</text><text class="th" x="20" y="124" text-anchor="start">E1</text><text class="ts" x="20" y="140" text-anchor="start">clip 长度</text><rect class="box hl" x="90" y="102" width="132" height="48" rx="6"/><text class="t" x="156.0" y="123.0" text-anchor="middle">T=32 · B=1</text><text class="ts" x="156.0" y="138.0" text-anchor="middle">clip 加长 4 倍</text><polyline class="ln" points="222,126.0 240,126.0" marker-end="url(#ld-a)"/><rect class="box" x="240" y="102" width="132" height="48" rx="6"/><text class="t" x="306.0" y="123.0" text-anchor="middle">stride 1</text><text class="ts" x="306.0" y="138.0" text-anchor="middle">感受野 7 帧</text><polyline class="ln" points="372,126.0 390,126.0" marker-end="url(#ld-a)"/><rect class="box" x="390" y="102" width="132" height="48" rx="6"/><text class="t" x="456.0" y="123.0" text-anchor="middle">mean(T)</text><text class="ts" x="456.0" y="138.0" text-anchor="middle">时间被平均掉</text><polyline class="ln" points="522,126.0 540,126.0" marker-end="url(#ld-a)"/><rect class="box" x="540" y="102" width="132" height="48" rx="6"/><text class="t" x="606.0" y="123.0" text-anchor="middle">2D 池化 22×22</text><text class="ts" x="606.0" y="138.0" text-anchor="middle">每 clip 一张图</text><polyline class="ln" points="672,126.0 690,126.0" marker-end="url(#ld-a)"/><rect class="box gh" x="690" y="102" width="132" height="48" rx="6"/><text class="ts" x="756.0" y="130.0" text-anchor="middle">无</text><polyline class="ln" points="822,126.0 840,126.0" marker-end="url(#ld-a)"/><rect class="box" x="840" y="102" width="132" height="48" rx="6"/><text class="t" x="906.0" y="123.0" text-anchor="middle">15488 维</text><text class="ts" x="906.0" y="138.0" text-anchor="middle">Linear → 1</text><text class="th" x="20" y="186" text-anchor="start">E2</text><text class="ts" x="20" y="202" text-anchor="start">batch</text><rect class="box hl" x="90" y="164" width="132" height="48" rx="6"/><text class="t" x="156.0" y="185.0" text-anchor="middle">T=32 · B=8</text><text class="ts" x="156.0" y="200.0" text-anchor="middle">DFD 为 4×累积 2</text><polyline class="ln" points="222,188.0 240,188.0" marker-end="url(#ld-a)"/><rect class="box" x="240" y="164" width="132" height="48" rx="6"/><text class="t" x="306.0" y="185.0" text-anchor="middle">stride 1</text><text class="ts" x="306.0" y="200.0" text-anchor="middle">感受野 7 帧</text><polyline class="ln" points="372,188.0 390,188.0" marker-end="url(#ld-a)"/><rect class="box" x="390" y="164" width="132" height="48" rx="6"/><text class="t" x="456.0" y="185.0" text-anchor="middle">mean(T)</text><text class="ts" x="456.0" y="200.0" text-anchor="middle">时间被平均掉</text><polyline class="ln" points="522,188.0 540,188.0" marker-end="url(#ld-a)"/><rect class="box" x="540" y="164" width="132" height="48" rx="6"/><text class="t" x="606.0" y="185.0" text-anchor="middle">2D 池化 22×22</text><text class="ts" x="606.0" y="200.0" text-anchor="middle">每 clip 一张图</text><polyline class="ln" points="672,188.0 690,188.0" marker-end="url(#ld-a)"/><rect class="box gh" x="690" y="164" width="132" height="48" rx="6"/><text class="ts" x="756.0" y="192.0" text-anchor="middle">无</text><polyline class="ln" points="822,188.0 840,188.0" marker-end="url(#ld-a)"/><rect class="box" x="840" y="164" width="132" height="48" rx="6"/><text class="t" x="906.0" y="185.0" text-anchor="middle">15488 维</text><text class="ts" x="906.0" y="200.0" text-anchor="middle">Linear → 1</text><text class="th" x="20" y="248" text-anchor="start">E3</text><text class="ts" x="20" y="264" text-anchor="start">特征维度</text><rect class="box" x="90" y="226" width="132" height="48" rx="6"/><text class="t" x="156.0" y="247.0" text-anchor="middle">T=32 · B=8</text><text class="ts" x="156.0" y="262.0" text-anchor="middle">DFD 为 4×累积 2</text><polyline class="ln" points="222,250.0 240,250.0" marker-end="url(#ld-a)"/><rect class="box" x="240" y="226" width="132" height="48" rx="6"/><text class="t" x="306.0" y="247.0" text-anchor="middle">stride 1</text><text class="ts" x="306.0" y="262.0" text-anchor="middle">感受野 7 帧</text><polyline class="ln" points="372,250.0 390,250.0" marker-end="url(#ld-a)"/><rect class="box" x="390" y="226" width="132" height="48" rx="6"/><text class="t" x="456.0" y="247.0" text-anchor="middle">mean(T)</text><text class="ts" x="456.0" y="262.0" text-anchor="middle">时间被平均掉</text><polyline class="ln" points="522,250.0 540,250.0" marker-end="url(#ld-a)"/><rect class="box hl" x="540" y="226" width="132" height="48" rx="6"/><text class="t" x="606.0" y="247.0" text-anchor="middle">2D 池化 4×4</text><text class="ts" x="606.0" y="262.0" text-anchor="middle">特征 15488→512</text><polyline class="ln" points="672,250.0 690,250.0" marker-end="url(#ld-a)"/><rect class="box gh" x="690" y="226" width="132" height="48" rx="6"/><text class="ts" x="756.0" y="254.0" text-anchor="middle">无</text><polyline class="ln" points="822,250.0 840,250.0" marker-end="url(#ld-a)"/><rect class="box" x="840" y="226" width="132" height="48" rx="6"/><text class="t" x="906.0" y="247.0" text-anchor="middle">512 维</text><text class="ts" x="906.0" y="262.0" text-anchor="middle">Linear → 1</text><text class="th" x="20" y="310" text-anchor="start">E4</text><text class="ts" x="20" y="326" text-anchor="start">时序建模</text><rect class="box" x="90" y="288" width="132" height="48" rx="6"/><text class="t" x="156.0" y="309.0" text-anchor="middle">T=32 · B=8</text><text class="ts" x="156.0" y="324.0" text-anchor="middle">DFD 为 4×累积 2</text><polyline class="ln" points="222,312.0 240,312.0" marker-end="url(#ld-a)"/><rect class="box" x="240" y="288" width="132" height="48" rx="6"/><text class="t" x="306.0" y="309.0" text-anchor="middle">stride 1</text><text class="ts" x="306.0" y="324.0" text-anchor="middle">感受野 7 帧</text><polyline class="ln" points="372,312.0 390,312.0" marker-end="url(#ld-a)"/><rect class="box hl" x="390" y="288" width="132" height="48" rx="6"/><text class="t" x="456.0" y="309.0" text-anchor="middle">不做 mean</text><text class="ts" x="456.0" y="324.0" text-anchor="middle">T=32 保留</text><polyline class="ln" points="522,312.0 540,312.0" marker-end="url(#ld-a)"/><rect class="box hl" x="540" y="288" width="132" height="48" rx="6"/><text class="t" x="606.0" y="309.0" text-anchor="middle">3D 池化 (T,4,4)</text><text class="ts" x="606.0" y="324.0" text-anchor="middle">每个时间步 512</text><polyline class="ln" points="672,312.0 690,312.0" marker-end="url(#ld-a)"/><rect class="box hl" x="690" y="288" width="132" height="48" rx="6"/><text class="t" x="756.0" y="309.0" text-anchor="middle">TCN ×2 → GAP</text><text class="ts" x="756.0" y="324.0" text-anchor="middle">d = 1, 2</text><polyline class="ln" points="822,312.0 840,312.0" marker-end="url(#ld-a)"/><rect class="box" x="840" y="288" width="132" height="48" rx="6"/><text class="t" x="906.0" y="309.0" text-anchor="middle">512 维</text><text class="ts" x="906.0" y="324.0" text-anchor="middle">Linear → 1</text><text class="th" x="20" y="372" text-anchor="start">E4′</text><text class="ts" x="20" y="388" text-anchor="start">时间聚合</text><rect class="box" x="90" y="350" width="132" height="48" rx="6"/><text class="t" x="156.0" y="371.0" text-anchor="middle">T=32 · B=8</text><text class="ts" x="156.0" y="386.0" text-anchor="middle">DFD 为 4×累积 2</text><polyline class="ln" points="222,374.0 240,374.0" marker-end="url(#ld-a)"/><rect class="box" x="240" y="350" width="132" height="48" rx="6"/><text class="t" x="306.0" y="371.0" text-anchor="middle">stride 1</text><text class="ts" x="306.0" y="386.0" text-anchor="middle">感受野 7 帧</text><polyline class="ln" points="372,374.0 390,374.0" marker-end="url(#ld-a)"/><rect class="box" x="390" y="350" width="132" height="48" rx="6"/><text class="t" x="456.0" y="371.0" text-anchor="middle">不做 mean</text><text class="ts" x="456.0" y="386.0" text-anchor="middle">T=32 保留</text><polyline class="ln" points="522,374.0 540,374.0" marker-end="url(#ld-a)"/><rect class="box" x="540" y="350" width="132" height="48" rx="6"/><text class="t" x="606.0" y="371.0" text-anchor="middle">3D 池化 (T,4,4)</text><text class="ts" x="606.0" y="386.0" text-anchor="middle">每个时间步 512</text><polyline class="ln" points="672,374.0 690,374.0" marker-end="url(#ld-a)"/><rect class="box hl" x="690" y="350" width="132" height="48" rx="6"/><text class="t" x="756.0" y="371.0" text-anchor="middle">TCN → 换聚合</text><text class="ts" x="756.0" y="386.0" text-anchor="middle">Max/Attn/CLS/Flatten</text><polyline class="ln" points="822,374.0 840,374.0" marker-end="url(#ld-a)"/><rect class="box" x="840" y="350" width="132" height="48" rx="6"/><text class="t" x="906.0" y="371.0" text-anchor="middle">512 维</text><text class="ts" x="906.0" y="386.0" text-anchor="middle">Flatten 先投影</text></svg></div><figcaption><b>图 10 ·</b> 实验阶梯 E0–E4。每一行是一次实验的完整数据流，橙色框是相对上一行唯一改动的部件（E4 的三个橙框是同一个改动：去掉提前的时间平均、改为保留时间步交给 TCN）。E0–E3 在 3D-CNN 之后立刻对时间求平均，之后的部件都看不到时间顺序。E4′ 是一组实验：只把 TCN 之后的 GAP 换成别的聚合方式（4.5 节）。</figcaption></figure>
+<h3 id="61">6.1 每个实验的规格</h3>
+<p>每一步只改一件事。优化器、学习率（Adam 1e-4，<code>lr_gamma</code> 0.95）、60 epoch、AMP 在 E0–E4 之间都不变。
+Phase A 没有早停，60 个 epoch 全部跑完，按验证 AUROC 保存 <code>best.pt</code>。每个实验在两个数据集上各跑一次。</p>
+<table>
+<thead>
+<tr>
+<th>实验</th>
+<th>改动</th>
+<th>模型</th>
+<th>输入</th>
+<th>输出特征</th>
+<th>batch（Celeb / DFD）</th>
+<th>可训练参数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>E0</strong></td>
+<td>基线：V1 结构搬到 P0.5</td>
+<td>3D-CNN → mean(T) → 2D 池化 22 → Linear</td>
+<td><code>[B,3,8,H,W]</code></td>
+<td><code>[B,15488]</code></td>
+<td>1 / 1</td>
+<td>105,769</td>
+</tr>
+<tr>
+<td><strong>E0S</strong></td>
+<td>不训模型</td>
+<td>元数据捷径控制</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>E1</strong></td>
+<td>T 8→32</td>
+<td>同 E0</td>
+<td><code>[B,3,32,H,W]</code></td>
+<td><code>[B,15488]</code></td>
+<td>1 / 1</td>
+<td>105,769</td>
+</tr>
+<tr>
+<td><strong>E2</strong></td>
+<td>batch 加大、类别平衡</td>
+<td>同 E0</td>
+<td><code>[B,3,32,H,W]</code></td>
+<td><code>[B,15488]</code></td>
+<td>8 / 4×2</td>
+<td>105,769</td>
+</tr>
+<tr>
+<td><strong>S</strong></td>
+<td>仅 DFD：池化筛查，不训练</td>
+<td>已训练的 E1 或 E2 检查点，5 种空间池化各拟合一次线性探针</td>
+<td>每视频 8 clip</td>
+<td>探针 AUROC ×5</td>
+<td>—</td>
+<td>0</td>
+</tr>
+<tr>
+<td><strong>E3</strong></td>
+<td>空间池化 22→4</td>
+<td>3D-CNN → mean(T) → 2D 池化 4 → Linear</td>
+<td><code>[B,3,32,H,W]</code></td>
+<td><code>[B,512]</code></td>
+<td>8 / 4×2</td>
+<td>90,793</td>
+</tr>
+<tr>
+<td><strong>E4</strong></td>
+<td><strong>去 mean，加 TCN</strong></td>
+<td>4.2 节的完整 V2</td>
+<td><code>[B,3,32,H,W]</code></td>
+<td><code>[B,32,512]</code>→<code>[B,512]</code></td>
+<td>8 / 4×2</td>
+<td>1,666,729</td>
+</tr>
+<tr>
+<td><strong>E4′</strong></td>
+<td>只换时间聚合</td>
+<td>同 E4，GAP 换成 Max / Attention / CLS / Flatten / Flatten-小（4.5 节）；两轮多 seed</td>
+<td><code>[B,3,32,H,W]</code></td>
+<td><code>[B,512]</code></td>
+<td>8 / 4×2</td>
+<td>E4 另加 0 / 65,793 / 2,120,192 / 8,389,120 / 1,081,920</td>
+</tr>
+<tr>
+<td><strong>E5</strong></td>
+<td>Phase B</td>
+<td>冻结选定模型 + ridge 探针</td>
+<td>每视频 8 clip</td>
+<td>探针 AUROC</td>
+<td>—</td>
+<td>0</td>
+</tr>
+<tr>
+<td><strong>E6</strong></td>
+<td>Phase C</td>
+<td>冻结选定模型 + 贝叶斯头</td>
+<td>每视频 8 clip</td>
+<td>异常分</td>
+<td>8 / 8</td>
+<td>295,682（变分）</td>
+</tr>
+<tr>
+<td><strong>E7</strong></td>
+<td>预训练上界</td>
+<td>MC3-18 → 池化 (T,1,1) → TCN → <strong>E4′ 选定的聚合</strong> → Linear</td>
+<td><code>[B,3,32,256,256]</code></td>
+<td><code>[B,32,512]</code>→<code>[B,512]</code></td>
+<td>4×2 / —</td>
+<td>13,066,689（GAP 时）</td>
+</tr>
+<tr>
+<td><strong>E7b</strong></td>
+<td>可选：不见伪造标签</td>
+<td>MC3-18 冻结（只用 Kinetics 权重）→ 池化 (T,1,1) → GAP → 探针 / 贝叶斯头，不做 Phase A</td>
+<td><code>[B,3,32,256,256]</code></td>
+<td><code>[B,512]</code></td>
+<td>—</td>
+<td>295,682（变分）</td>
+</tr>
+</tbody>
+</table>
+<p>其中 H×W 在 CelebDF++ 是 256×256，在 DFD 是 540×960。"选定模型"指 E4 与 E4′ 中验证集表现最好的那个（6.2 节）。</p>
+<h3 id="62">6.2 各步的判据</h3>
+<p><strong>E0</strong>：只要能跑完并给出 P0.5 上的参照数字。若 E0 就冲到 0.85 以上，先去对照 E0S——
+极可能是身份泄漏或压缩捷径，不是模型变强了。</p>
+<p><strong>E1（clip 长度）</strong>：时间聚合还是 mean，预期变化不大。作用是在加 TCN 之前证明"加长 clip 本身不会变差"，并测出真实吞吐。</p>
+<p><strong>E2（batch）</strong>：batch=1 时 BatchNorm 的 batch 统计量就是<strong>单个视频自己的统计量</strong>——
+训练时相当于 instance norm，推断时却用跨视频的 running 统计量，两者不一致；而且每一步梯度只来自一个类别。
+注意问题不在"样本少、统计不稳"（BN3d 在 T×H×W 上统计，单个视频也有大量元素），而在"只来自一个视频、一个类别"。
+若 E2 明显好于 E1，说明 V1 的一部分失败要归到 batch=1。
+DFD 的物理 batch 是 4（2 real + 2 fake），梯度累积 2 步；累积不改变 BN 看到的物理 batch，结果表里要注明。</p>
+<p><strong>S（DFD 池化筛查，E3 之前）</strong>：在同一个检查点上比较 5 种空间池化的探针 AUROC（再配 8 次随机初始化的分布）。若最大值 4×4 比平均 4×4 高出的部分超过随机初始化分布的波动范围，DFD 的 E3/E4/E4′ 改用最大值池化；否则保持平均。注意这个检查点是在 22×22 平均池化下训练的，筛查结果会偏向平均池化——所以最大值池化若仍然领先，结论反而更可信。</p>
+<p><strong>E3（512 瓶颈）</strong>：预期持平或略降，目的是给 E4 铺路。若明显下降，回退到 7×7（1568 维，加一层 Linear 到 512）。若只在 DFD 上明显下降而 CelebDF++ 没有，先看筛查结果：多半是人脸被稀释，而不是 512 维不够。</p>
+<p><strong>E4（主改动）</strong>：若相对 E3 没有提升，<strong>先查 TCN 是否退化</strong>：记录各层输出标准差和残差支路权重范数；
+消融掉 d=2 那层看是否无差别。确认 TCN 在工作、仍无提升，才能下"时序建模没用"的结论。"TCN 有没有用"是全案最核心的结论，所以 <strong>E3 和 E4 在 CelebDF++ 上各跑 3 个 seed</strong>（E4 的三个 seed 与 E4′ 第二轮里的 GAP 共用），按 seed 均值和标准差比较，不看单次结果。</p>
+<p><strong>E4′（时间聚合）</strong>：各变体的参数量从 0 到 839 万不等，差的不只是聚合方式，还有模型容量；单次训练里 CLS 比 GAP 高 0.01，不能说明 CLS 更好。所以分两轮，都在 CelebDF++ 上做（每次只需几个小时）：</p>
+<ol>
+<li><strong>第一轮</strong>：五个变体各跑 1 个 seed（seed 42，与 E4 相同），按验证 AUROC 排出前两名。</li>
+<li><strong>第二轮</strong>：GAP 和前两名各补 2 个 seed（43、44），每种共 3 个 seed。</li>
+<li><strong>判定</strong>：某个变体的 3 个 seed 均值高于 GAP，且 3 个 seed 都赢（同一 seed 两两配对），且对三个 seed 的平均分数做配对 bootstrap，95% 区间不含 0——同时满足才定为主线聚合方式；否则保留 GAP（零参数优先）。</li>
+</ol>
+<p>选出的方式用于 E5、E6（取它 seed 42 的检查点）和 E7。按 4.5 节的三种结果解读。选择只看验证集，测试集仍然封存。DFD 视时长，至少跑 Max——零参数，而且正好针对 DFD 的稀释问题。</p>
+<p><strong>E5 vs E6</strong>：按 5.3 节判读。</p>
+<p><strong>E7（上界对照）</strong>：回答论文绕不过去的问题——<strong>失败是架构的问题，还是"从随机初始化训 9 万参数"的问题？</strong>
+你们整理的文献表里，所有强结果都建立在预训练 backbone 上。两种结局都有价值：
+E7 也在 0.55 左右 → "这个协议下任务本身就难"；E7 到 0.85 → "从零训练的小提取器是瓶颈"。
+E7 <strong>用 E4′ 选定的同一种聚合方式</strong>，这样 E4 与 E7 之间唯一的差别就是"从零训练 vs Kinetics 预训练"。因此 E7 要等 E4′ 选出结果后再跑。</p>
+<p><strong>E7b（可选）</strong>：MC3-18 冻结在 Kinetics 权重上，不做 Phase A，直接 32 步 → GAP → 探针和贝叶斯头。Kinetics 是动作识别的监督，不是 deepfake 的监督，所以这是方案里<strong>唯一整条流水线都没见过伪造标签的配置</strong>。论文若要主张单类或 data-agnostic，需要这个数字；它不训练提取器，只要前向和训练一个小头，代价很小。这里不用 TCN，因为 TCN 需要标签来训练。</p>
+<figure class="fig" id="fig-e7"><div class="figscroll"><svg class="dg" viewBox="0 0 1000 262" role="img" aria-label="E7 选 MC3-18：它只在空间上降采样，32 个时间步保留到输出；R3D-18 会把时间压到 4 步" xmlns="http://www.w3.org/2000/svg"><defs><marker id="e7-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="mk" d="M0,0 L10,5 L0,10 z"/></marker><marker id="e7-h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-hl" d="M0,0 L10,5 L0,10 z"/></marker></defs><text class="ts" x="20" y="24" text-anchor="start">输入 [B,3,32,256,256] · CelebDF++ · 用 Kinetics 的均值方差归一化</text><text class="th" x="20" y="54" text-anchor="start">MC3-18（选用）· 1170 万参数 · Kinetics-400 预训练</text><text class="th" x="20" y="166" text-anchor="start">R3D-18（不用）· 3340 万参数 · 同样是 Kinetics-400 预训练</text><rect class="box" x="20" y="64" width="170" height="62" rx="6"/><text class="t" x="105.0" y="85.0" text-anchor="middle">stem</text><text class="ts" x="105.0" y="100.0" text-anchor="middle">Conv3d (3,7,7)，空间 s2</text><text class="tm" x="105.0" y="114.0" text-anchor="middle">→ [64,32,128,128]</text><polyline class="ln" points="190,95 220,95" marker-end="url(#e7-a)"/><rect class="box" x="220" y="64" width="170" height="62" rx="6"/><text class="t" x="305.0" y="85.0" text-anchor="middle">layer1 · 3D 卷积</text><text class="ts" x="305.0" y="100.0" text-anchor="middle">3×3×3，不降采样</text><text class="tm" x="305.0" y="114.0" text-anchor="middle">→ [64,32,128,128]</text><polyline class="ln" points="390,95 420,95" marker-end="url(#e7-a)"/><rect class="box hl" x="420" y="64" width="170" height="62" rx="6"/><text class="t" x="505.0" y="85.0" text-anchor="middle">layer2–4 · (1,3,3)</text><text class="ts" x="505.0" y="100.0" text-anchor="middle">只降空间，T 不动</text><text class="tm" x="505.0" y="114.0" text-anchor="middle">→ [512,32,16,16]</text><polyline class="ln" points="590,95 620,95" marker-end="url(#e7-a)"/><rect class="box" x="620" y="64" width="170" height="62" rx="6"/><text class="t" x="705.0" y="85.0" text-anchor="middle">池化 (T,1,1)</text><text class="ts" x="705.0" y="100.0" text-anchor="middle">每个时间步 512 维</text><text class="tm" x="705.0" y="114.0" text-anchor="middle">→ [B,32,512]</text><polyline class="ln" points="790,95 820,95" marker-end="url(#e7-a)"/><rect class="box" x="820" y="64" width="170" height="62" rx="6"/><text class="t" x="905.0" y="92.0" text-anchor="middle">TCN → 选定聚合 → Linear</text><text class="ts" x="905.0" y="107.0" text-anchor="middle">与选定模型相同</text><rect class="box gh" x="20" y="176" width="170" height="62" rx="6"/><text class="t" x="105.0" y="197.0" text-anchor="middle">stem</text><text class="ts" x="105.0" y="212.0" text-anchor="middle">Conv3d (3,7,7)，空间 s2</text><text class="tm" x="105.0" y="226.0" text-anchor="middle">→ [64,32,128,128]</text><polyline class="ln" points="190,207 220,207" marker-end="url(#e7-a)"/><rect class="box gh" x="220" y="176" width="170" height="62" rx="6"/><text class="t" x="305.0" y="197.0" text-anchor="middle">layer1 · 3D 卷积</text><text class="ts" x="305.0" y="212.0" text-anchor="middle">3×3×3，不降采样</text><text class="tm" x="305.0" y="226.0" text-anchor="middle">→ [64,32,128,128]</text><polyline class="ln" points="390,207 420,207" marker-end="url(#e7-a)"/><rect class="box gh" x="420" y="176" width="170" height="62" rx="6"/><text class="t" x="505.0" y="197.0" text-anchor="middle">layer2–4 · 3×3×3</text><text class="ts" x="505.0" y="212.0" text-anchor="middle">时间和空间一起降</text><text class="tm hlt" x="505.0" y="226.0" text-anchor="middle">→ [512,4,16,16]</text><polyline class="ln" points="590,207 620,207" marker-end="url(#e7-a)"/><rect class="box gh" x="620" y="176" width="170" height="62" rx="6"/><text class="t" x="705.0" y="204.0" text-anchor="middle">池化 (T,1,1)</text><text class="tm hlt" x="705.0" y="219.0" text-anchor="middle">→ [B,4,512]</text><polyline class="ln" points="790,207 820,207" marker-end="url(#e7-a)"/><rect class="box gh" x="820" y="176" width="170" height="62" rx="6"/><text class="t" x="905.0" y="204.0" text-anchor="middle">TCN 只剩 4 步</text><text class="ts" x="905.0" y="219.0" text-anchor="middle">时序建模无从谈起</text></svg></div><figcaption><b>图 11 ·</b> E7 为什么用 MC3-18 而不用 R3D-18（两者都是 torchvision 自带的 Kinetics-400 预训练模型，形状为本地实测）。MC3-18 只在 stem 和 layer1 做 3D 卷积，layer2–4 的卷积核是 (1,3,3)、只在空间上降采样，所以 32 个时间步一直保留到输出，可以直接接和选定模型完全相同的 TCN 与时间聚合；R3D-18 在 layer2–4 同时降时间，输出只剩 4 步。</figcaption></figure>
+<hr />
+<h2 id="7">7. 实验怎么做（逐步）</h2>
+<figure class="fig" id="fig-runorder"><div class="figscroll"><svg class="dg" viewBox="0 0 980 262" role="img" aria-label="运行顺序：环境检查、P0.5 划分、捷径地板，两个数据集各走 E0 到 E4 和聚合系列，E7 等 E4′ 选定后再跑，最后测试" xmlns="http://www.w3.org/2000/svg"><defs><marker id="ro-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="mk" d="M0,0 L10,5 L0,10 z"/></marker><marker id="ro-h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-hl" d="M0,0 L10,5 L0,10 z"/></marker></defs><rect class="box" x="20" y="112" width="100" height="56" rx="6"/><text class="t" x="70.0" y="137.0" text-anchor="middle">① 远程环境</text><text class="ts" x="70.0" y="152.0" text-anchor="middle">路径/显存/读速</text><polyline class="ln" points="120,140 140,140" marker-end="url(#ro-a)"/><rect class="box" x="140" y="112" width="100" height="56" rx="6"/><text class="t" x="190.0" y="137.0" text-anchor="middle">② P0.5 划分</text><text class="ts" x="190.0" y="152.0" text-anchor="middle">本地生成后提交</text><polyline class="ln" points="240,140 260,140" marker-end="url(#ro-a)"/><rect class="box" x="260" y="112" width="100" height="56" rx="6"/><text class="t" x="310.0" y="137.0" text-anchor="middle">③ E0S</text><text class="ts" x="310.0" y="152.0" text-anchor="middle">捷径地板</text><text class="th" x="400" y="22" text-anchor="start">④ 阶梯（两个数据集各跑一遍）</text><text class="ts" x="400" y="44" text-anchor="start">CelebDF++</text><text class="ts" x="400" y="168" text-anchor="start">DFD</text><polyline class="ln" points="360,140 380,140 380,74 400,74" marker-end="url(#ro-a)"/><polyline class="ln" points="380,140 380,198 400,198" marker-end="url(#ro-a)"/><polyline class="ln" points="400,74 780,74" marker-end="url(#ro-a)"/><rect class="box" x="400" y="52" width="46" height="44" rx="6"/><text class="t" x="423.0" y="78.0" text-anchor="middle">E0</text><rect class="box" x="456" y="52" width="46" height="44" rx="6"/><text class="t" x="479.0" y="78.0" text-anchor="middle">E1</text><rect class="box" x="512" y="52" width="46" height="44" rx="6"/><text class="t" x="535.0" y="78.0" text-anchor="middle">E2</text><rect class="box" x="568" y="52" width="46" height="44" rx="6"/><text class="t" x="591.0" y="78.0" text-anchor="middle">E3</text><rect class="box" x="624" y="52" width="46" height="44" rx="6"/><text class="t" x="647.0" y="78.0" text-anchor="middle">E4</text><rect class="box" x="684" y="52" width="64" height="44" rx="6"/><text class="t" x="716.0" y="71.0" text-anchor="middle">E4′</text><text class="ts" x="716.0" y="86.0" text-anchor="middle">聚合 ×5</text><polyline class="ln" points="400,198 780,198" marker-end="url(#ro-a)"/><rect class="box" x="400" y="176" width="46" height="44" rx="6"/><text class="t" x="423.0" y="202.0" text-anchor="middle">E0</text><rect class="box" x="456" y="176" width="46" height="44" rx="6"/><text class="t" x="479.0" y="202.0" text-anchor="middle">E1</text><rect class="box gh" x="512" y="176" width="46" height="44" rx="6"/><text class="t" x="535.0" y="202.0" text-anchor="middle">E2</text><rect class="box gh" x="568" y="176" width="46" height="44" rx="6"/><text class="t" x="591.0" y="202.0" text-anchor="middle">E3</text><rect class="box" x="624" y="176" width="46" height="44" rx="6"/><text class="t" x="647.0" y="202.0" text-anchor="middle">E4</text><rect class="box gh" x="684" y="176" width="64" height="44" rx="6"/><text class="t" x="716.0" y="195.0" text-anchor="middle">E4′</text><text class="ts" x="716.0" y="210.0" text-anchor="middle">聚合 ×5</text><rect class="box frz" x="539" y="124" width="104" height="34" rx="6"/><text class="t" x="591.0" y="138.0" text-anchor="middle">DFD 池化筛查</text><text class="ts" x="591.0" y="153.0" text-anchor="middle">不训练</text><polyline class="ln" points="591,158 591,176" marker-end="url(#ro-a)"/><text class="ts" x="560" y="244" text-anchor="middle">E2、E3、E4′ 视时长可跳过</text><rect class="box" x="780" y="4" width="196" height="38" rx="6"/><text class="t" x="878.0" y="27.0" text-anchor="middle">E7 · MC3-18（仅 CelebDF++）</text><polyline class="ln" points="716,52 716,23 780,23" marker-end="url(#ro-a)"/><text class="tl" x="708" y="38" text-anchor="end">选定聚合后</text><rect class="box" x="780" y="50" width="84" height="48" rx="6"/><text class="t" x="822.0" y="71.0" text-anchor="middle">⑤ E5 · E6</text><text class="ts" x="822.0" y="86.0" text-anchor="middle">探针 / BCNN</text><rect class="box" x="780" y="174" width="84" height="48" rx="6"/><text class="t" x="822.0" y="195.0" text-anchor="middle">⑤ E5 · E6</text><text class="ts" x="822.0" y="210.0" text-anchor="middle">探针 / BCNN</text><polyline class="ln" points="864,74 882,74 882,127 900,127" marker-end="url(#ro-a)"/><polyline class="ln" points="864,198 882,198 882,153 900,153" marker-end="url(#ro-a)"/><polyline class="ln" points="938,42 938,110" marker-end="url(#ro-a)"/><rect class="box" x="900" y="110" width="76" height="60" rx="6"/><text class="t" x="938.0" y="137.0" text-anchor="middle">⑥ 测试</text><text class="ts" x="938.0" y="152.0" text-anchor="middle">只跑一次</text></svg></div><figcaption><b>图 12 ·</b> 运行顺序。①–③ 只做一次；④ 两个数据集各自沿 E0→E4 爬阶梯，再跑 E4′ 时间聚合系列（两轮多 seed，6.2 节；DFD 若单次训练超过约 24 小时，虚线框的 E2、E3、E4′ 可以跳过，归因在 CelebDF++ 上完成）；DFD 在 E3 之前先对已有检查点做一次不训练的池化筛查（4.3 节）；E7 用 E4′ 选定的聚合方式，所以要等 CelebDF++ 的 E4′ 出结果；⑤ 用各自选定的模型做 E5 探针和 E6 贝叶斯头；⑥ 封存的测试集只在最后评估一次。</figcaption></figure>
+<p>以下命令在远程 Linux 上执行，均在仓库根目录。标 <strong>（需新增）</strong> 的参数和配置项要先按第 10 节实现。
+<strong>所有长任务放进 <code>tmux</code></strong>，断开 SSH 不会中断训练；输出同时写日志。</p>
+<h3 id="1">步骤 ① 远程环境检查（每台新机器一次）</h3>
+<pre><code class="language-bash">tmux new -s v2                       # 断线后用 tmux attach -t v2 回来
+git pull
+mkdir -p results/v2 logs
+source remote_env.sh                 # DFD_ROOT、CELEBDFV3_ROOT、NUM_WORKERS
+nproc; free -g; nvidia-smi           # 记下 CPU 核数、内存、显存
+# CelebDF++ 人脸框缓存（本地 face_cache.tar，520 MB）上传后解压，
+# 应得到 artifacts/face_cache/cache_index.csv
+tar -xf face_cache.tar
+python scripts/check_dataset_roots.py --config configs/v2/stage_a_dfd.yaml \
+    --manifest artifacts/manifests/combined_manifest_p05.csv --decode
+python vram_probe.py results/v2/vram_3080ti.json        # 与第 1.1 节的表核对
+python scripts/benchmark_loader.py --config configs/v2/stage_a_dfd.yaml \
+    --manifest artifacts/manifests/combined_manifest_p05.csv --workers 2 4 8
+</code></pre>
+<p>产物：显存核对结果、每个 worker 数的读取速度。<strong>按读取最快、且 <code>free -g</code> 不吃紧的 worker 数定 <code>NUM_WORKERS</code>，之后所有实验固定不变</strong>
+（worker 数会影响增广的随机数，V1 的 README 已说明）。</p>
+<h3 id="2-p05">步骤 ② 生成 P0.5 划分（在本地做，然后提交）</h3>
+<pre><code class="language-bash">python scripts/build_manifest.py --dfd-root &quot;&lt;DFD 路径&gt;&quot; --celeb-root &quot;&lt;CelebDF++ 路径&gt;&quot; \
+    --output-dir artifacts/manifests --seed 42 --protocol p05         # --protocol（需新增）
+git add artifacts/manifests/combined_manifest_p05.csv artifacts/manifests/combined_summary_p05.json
+git commit -m &quot;Add the P0.5 source-family-disjoint manifest&quot;
+</code></pre>
+<p>检查 summary 里每个数据集、每个 split 的 real/fake 数量<strong>和以 fake、以 real 为正类的 base rate</strong>，记进日志（第 9 节要用）；远程 <code>git pull</code> 取用。若要做 2.2 节的 P0 对照，用 <code>--protocol p0</code> 再生成一份。</p>
+<h3 id="3-e0s">步骤 ③ E0S：捷径地板</h3>
+<pre><code class="language-bash">M=artifacts/manifests/combined_manifest_p05.csv
+python scripts/shortcut_controls.py --manifest $M \
+    --video-sizes scripts/video_size_reports/video_sizes.csv \
+    --splits val test --output results/v2/E0S_shortcuts.json
+</code></pre>
+<p>产物：码率、bits per pixel、分辨率、帧数各自作为"检测器"的 AUROC。随机初始化探针的分布在步骤 ⑤ 里一起测（要和被测模型同结构）。</p>
+<h3 id="4-e0-e4phase-a">步骤 ④ 阶梯 E0 → E4（Phase A）</h3>
+<p>基础配置两份：<code>configs/v2/stage_a_celeb.yaml</code>（由 <code>stage_a_celebdfv3.yaml</code> 复制）和 <code>configs/v2/stage_a_dfd.yaml</code>（由 <code>stage_a_dfd.yaml</code> 复制），
+里面写好 <code>train.amp: true</code>、评测分块（第 10 节）、<code>checkpoint_dir: artifacts/run_v2_celeb/...</code>。
+每个实验只用命令行覆盖改动的那一项：</p>
+<pre><code class="language-bash">M=artifacts/manifests/combined_manifest_p05.csv
+C=configs/v2/stage_a_celeb.yaml
+A=&quot;--config $C --manifest $M --max-epochs 60 --hidden-dim 0&quot;     # --hidden-dim 0 = 单层 Linear（需新增）
+
+python pretrain_extractor.py $A --run-suffix E0 --clip-length 8  --batch-size 1 --spatial-output-size 22 --temporal-head mean 2&gt;&amp;1 | tee logs/v2_celeb_E0.log
+python pretrain_extractor.py $A --run-suffix E1 --clip-length 32 --batch-size 1 --spatial-output-size 22 --temporal-head mean 2&gt;&amp;1 | tee logs/v2_celeb_E1.log
+python pretrain_extractor.py $A --run-suffix E2 --clip-length 32 --batch-size 8 --spatial-output-size 22 --temporal-head mean 2&gt;&amp;1 | tee logs/v2_celeb_E2.log
+python pretrain_extractor.py $A --run-suffix E3 --clip-length 32 --batch-size 8 --spatial-output-size 4  --temporal-head mean 2&gt;&amp;1 | tee logs/v2_celeb_E3.log
+python pretrain_extractor.py $A --run-suffix E4 --clip-length 32 --batch-size 8 --spatial-output-size 4  --temporal-head tcn  2&gt;&amp;1 | tee logs/v2_celeb_E4.log
+</code></pre>
+<p><code>--temporal-head</code> 需新增。DFD 把 <code>C</code> 换成 <code>configs/v2/stage_a_dfd.yaml</code>，E2–E4 的 <code>--batch-size 8</code> 换成
+<code>--batch-size 4 --grad-accum-steps 2</code>（需新增）。</p>
+<p>E4 跑完后，接着跑 E4′——只换时间聚合，其余参数与 E4 完全相同：</p>
+<pre><code class="language-bash"># 第一轮：五个变体各 1 个 seed（seed 42，与 E4 相同）
+for AGG in max attn cls flatten flatten64; do          # --temporal-agg（需新增）
+  python pretrain_extractor.py $A --run-suffix E4_${AGG}_s42 --clip-length 32 --batch-size 8 \
+      --spatial-output-size 4 --temporal-head tcn --temporal-agg $AGG --seed 42 \
+      2&gt;&amp;1 | tee logs/v2_celeb_E4_${AGG}_s42.log
+done
+
+# 第二轮：GAP 和第一轮的前两名各补 2 个 seed（这里假设前两名是 attn 和 max）
+for AGG in gap attn max; do
+  for SEED in 43 44; do                                   # --seed（需新增）
+    python pretrain_extractor.py $A --run-suffix E4_${AGG}_s$SEED --clip-length 32 --batch-size 8 \
+        --spatial-output-size 4 --temporal-head tcn --temporal-agg $AGG --seed $SEED \
+        2&gt;&amp;1 | tee logs/v2_celeb_E4_${AGG}_s$SEED.log
+  done
+done
+
+# E3 也补 2 个 seed，用于 E3 vs E4 的核心对比
+for SEED in 43 44; do
+  python pretrain_extractor.py $A --run-suffix E3_s$SEED --clip-length 32 --batch-size 8 \
+      --spatial-output-size 4 --temporal-head mean --seed $SEED 2&gt;&amp;1 | tee logs/v2_celeb_E3_s$SEED.log
+done
+</code></pre>
+<p><strong>DFD 在 E3 之前先做池化筛查 S</strong>（不训练，一次前向）：</p>
+<pre><code class="language-bash">python scripts/feature_diagnostics.py --checkpoint artifacts/run_v2_dfd_E2/checkpoints/best.pt \
+    --manifest $M --split val --spatial-pools avg4x4 max4x4 avg4x7 avg8x14 avg22x22 \
+    --output results/v2/S_dfd_pool_screen.json                 # --spatial-pools（需新增）
+</code></pre>
+<p>若 DFD 跳过了 E2，就用 E1 的检查点。筛查选中最大值池化的话，DFD 的 E3、E4、E4′ 都加上 <code>--spatial-pool-mode max</code>（需新增）。</p>
+<p>三个旧代码的坑（V1 日志里记过）：</p>
+<ul>
+<li><strong><code>--max-epochs</code> 必须显式写 60</strong>，它的默认值 30 会覆盖配置里的 <code>epochs</code>。</li>
+<li><code>--run-suffix</code> 会拼到运行目录名后面：配置里的 <code>artifacts/run_v2_celeb/</code> 实际变成 <code>artifacts/run_v2_celeb_E4/</code>。</li>
+<li>Phase A <strong>没有早停</strong>，写了 <code>early_stopping_patience</code> 也不生效，一定跑满 60 epoch。</li>
+</ul>
+<p><strong>DFD 的顺序</strong>：先跑 E1-DFD 两个 epoch 计时，按第 1.3 节的决策规则决定 DFD 走完整阶梯还是只跑 E0、E1、E4。</p>
+<p>每个实验的产物：<code>history.csv/json</code>、<code>best.pt</code>、<code>last.pt</code>、<code>config.json</code>、训练曲线。</p>
+<h3 id="5-e5phase-b">步骤 ⑤ E5：线性探针（Phase B）</h3>
+<pre><code class="language-bash">CK=artifacts/run_v2_celeb_E4/checkpoints/best.pt
+python scripts/feature_diagnostics.py --checkpoint $CK --manifest $M --split val \
+    --output results/v2/E5_celeb_probe.json
+for i in 1 2 3 4 5 6 7 8; do                 # 随机初始化：每次重新抽一个同结构的网络
+  python scripts/feature_diagnostics.py --checkpoint $CK --manifest $M --split val \
+      --random-init --output results/v2/E5_celeb_random_$i.json
+done
+</code></pre>
+<p><code>feature_diagnostics.py</code> 需要支持 512 维和 TCN 结构（第 10 节）。若 E4′ 选出了别的聚合方式，<code>CK</code> 换成那个方式 seed 42 的检查点（如 <code>artifacts/run_v2_celeb_E4_attn_s42/checkpoints/best.pt</code>），步骤 ⑥ 同理。产物：训练后探针 AUROC，以及 8 次随机初始化的分布。
+<strong>判据：训练后的值要高于 8 次随机的最大值</strong>，否则表征没学到东西。</p>
+<h3 id="6-e6phase-c">步骤 ⑥ E6：贝叶斯头（Phase C）</h3>
+<pre><code class="language-bash">python train_3d_bcnn.py --config configs/v2/stage_c_celeb.yaml --manifest $M \
+    --init-extractor $CK --freeze-extractor --objective one_class_real \
+    --max-epochs 50 --early-stopping-patience 8 --run-suffix E6 2&gt;&amp;1 | tee logs/v2_celeb_E6.log
+</code></pre>
+<p><code>stage_c_celeb.yaml</code> 里写 <code>model.bayes_hidden: [256, 64]</code>、<code>model.bayes_activation: gelu</code>（需新增）。
+<code>--init-extractor</code> 读入的检查点要<strong>同时包含 3D-CNN 和 TCN 的权重</strong>（第 10 节）。</p>
+<blockquote>
+<p><strong>推荐：先缓存特征</strong>。提取器冻结后，同一个 clip 的 512 维特征是确定的。每个训练视频预先取 16 个 clip（随机位置 + 翻转），
+算一次特征存盘，贝叶斯头直接在缓存上训练——Phase C 不再需要解码视频、也不再跑 3D 卷积，DFD 上能省下绝大部分时间。
+代价是增广的随机性固定在这 16 个 clip 里；对一个只有 14.8 万权重的头，这通常够用。</p>
+</blockquote>
+<h3 id="7_1">步骤 ⑦ 测试集（只跑一次）</h3>
+<p>阶梯全部走完、所有选择都定下来之后，封存的测试集只评估一次：</p>
+<pre><code class="language-bash">python evaluate_3d_bcnn.py --config configs/v2/stage_c_celeb.yaml --manifest $M \
+    --checkpoint artifacts/run_v2_celeb_E6/checkpoints/best.pt --split test
+</code></pre>
+<p>同时对 E4 的 Phase A 头在测试集上评一次，作为"有监督上界"。结果按第 9 节的表格报告。</p>
+<h3 id="8-e7mc3-18-celebdf-e4">步骤 ⑧ E7：MC3-18（只做 CelebDF++，等 E4′ 选定聚合方式后再跑）</h3>
+<pre><code class="language-bash">python pretrain_extractor.py --config configs/v2/stage_a_celeb.yaml --manifest $M --max-epochs 60 \
+    --hidden-dim 0 --run-suffix E7 --backbone mc3_18_k400 --clip-length 32 \
+    --batch-size 4 --grad-accum-steps 2 --temporal-head tcn --temporal-agg &lt;E4′ 选定的方式&gt; \
+    2&gt;&amp;1 | tee logs/v2_celeb_E7.log
+</code></pre>
+<p><code>--backbone</code> 需新增：加载 torchvision 的 <code>mc3_18(weights=MC3_18_Weights.KINETICS400_V1)</code>，去掉 <code>fc</code> 和最后的全局池化，
+接 <code>AdaptiveAvgPool3d((T,1,1))</code>，归一化改用 Kinetics 的均值方差。<strong>权重文件（约 47 MB）要在远程预先下载</strong>到
+<code>~/.cache/torch/hub/checkpoints/</code>，训练时再联网容易卡住。之后照样做步骤 ⑤ 的探针。</p>
+<p><strong>E7b（可选，不见伪造标签）</strong>：提取器冻结在 Kinetics 权重上，不跑 Phase A：</p>
+<pre><code class="language-bash">python scripts/feature_diagnostics.py --backbone mc3_18_k400 --temporal-agg gap \
+    --manifest $M --split val --output results/v2/E7b_celeb_probe.json     # --backbone（需新增）
+python train_3d_bcnn.py --config configs/v2/stage_c_celeb.yaml --manifest $M \
+    --backbone mc3_18_k400 --temporal-agg gap --freeze-extractor --objective one_class_real \
+    --max-epochs 50 --early-stopping-patience 8 --run-suffix E7b 2&gt;&amp;1 | tee logs/v2_celeb_E7b.log
+</code></pre>
+<h3 id="9">步骤 ⑨ 释放实例前</h3>
+<p>沿用 V1 的做法：跑 <code>scripts/pre_teardown_audit.py</code>，把 <code>history</code>、<code>best.pt</code>、评测报告、日志全部收割回本地仓库，再释放实例。</p>
+<hr />
+<h2 id="8">8. 后续消融（主线跑通后）</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>对比</th>
+<th>问题</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A1</td>
+<td>TCN 两层 (d=1,2) vs 三层 (d=1,2,4)</td>
+<td>更长的时间感受野有没有用</td>
+</tr>
+<tr>
+<td>A2</td>
+<td>时间聚合方式</td>
+<td><strong>已前移为主线实验 E4′</strong>（4.5 节）</td>
+</tr>
+<tr>
+<td>A3</td>
+<td>空间 4×4 vs 1×1</td>
+<td>空间布局对单类异常检测有没有用（FTCN 用 1×1）</td>
+</tr>
+<tr>
+<td>A4</td>
+<td>AvgPool vs 可学习下采样 Conv3d(k=(1,3,3), s=(1,2,2))</td>
+<td>是否保留更多取证痕迹</td>
+</tr>
+<tr>
+<td>A5</td>
+<td>线性贝叶斯头 vs GELU 非线性</td>
+<td>非线性的贡献</td>
+</tr>
+<tr>
+<td>A6</td>
+<td>RGB vs YCbCr vs RGB+YCbCr</td>
+<td><strong>必须配压缩控制</strong>，见下</td>
+</tr>
+<tr>
+<td>A7</td>
+<td>3D-CNN+TCN vs temporal-only（FTCN 式）</td>
+<td>堵掉空间捷径后泛化是否改善</td>
+</tr>
+<tr>
+<td>A8</td>
+<td>提取器 stage 3 时间 stride 1 vs 2</td>
+<td>相邻时间步的冗余要不要削</td>
+</tr>
+<tr>
+<td>A9</td>
+<td>提取器时间 dilation (1,1,1) vs (1,2,4)</td>
+<td>不加参数把感受野从 7 拉到 15</td>
+</tr>
+<tr>
+<td>A10</td>
+<td>DFD 空间池化：平均 4×4 / 最大值 4×4 / 平均 4×7 / 平均 8×14</td>
+<td><strong>E3 之前先做不训练的筛查 S</strong>（4.3 节）；训练版消融只对筛查中领先的方式做</td>
+</tr>
+<tr>
+<td><strong>A11</strong></td>
+<td><strong>输入采样步长固定 s = 1 / 2 / 3（训练 = 评测）</strong></td>
+<td><strong>伪造线索偏短时（1 秒）还是偏长时（3–4 秒）；优先于 A8</strong></td>
+</tr>
+<tr>
+<td><strong>A12</strong></td>
+<td><strong>conv1 空间 stride 1 vs 2</strong></td>
+<td><strong>早期空间细节的价值；也是 DFD 算力不够时的回退方案</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>A6</strong>：YCbCr 正好打在已测出的压缩捷径上（码率 0.783），Y/Cb/Cr 本身就是视频压缩的颜色表达。
+必须在原始视频和<strong>统一重编码</strong>后的视频上各测一次；若优势只在原始视频上出现，基本可以断定它吃的是压缩捷径。</p>
+<hr />
+<h2 id="9_1">9. 评价指标</h2>
+<h3 id="91-ap-base-rate">9.1 AP 必须和 base rate 一起报</h3>
+<p><strong>两个数据集在 P0.5 下都是伪造占多数。</strong> 按总量估算（实际值以步骤 ② 生成的 summary 为准，分层划分下各 split 应接近）：</p>
+<table>
+<thead>
+<tr>
+<th>数据集</th>
+<th>总量 real / fake</th>
+<th>以 fake 为正类的 base rate</th>
+<th>以 real 为正类的 base rate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DFD</td>
+<td>363 / 3,068</td>
+<td>≈ 0.89</td>
+<td>≈ 0.11</td>
+</tr>
+<tr>
+<td>CelebDF++</td>
+<td>890 / 53,196</td>
+<td>≈ 0.98</td>
+<td>≈ 0.016</td>
+</tr>
+</tbody>
+</table>
+<p>（第 5 版这里写的"DFD 验证集 45 real / 17 fake、base rate 0.27、两边不平衡方向相反"来自 V1 的 P1 划分，在 P0.5 下不再成立，已删除。）</p>
+<p>现有代码 <code>src/video_bcnn/metrics.py:93</code> 以 fake 为正类。在伪造占多数时，这个 AP 几乎饱和：
+V1 的 CelebDF++ 测试集上 AP = 0.9733、base rate = 0.9698，只高 0.0035，信息量还不如 AUROC。</p>
+<p><strong>规定</strong>：</p>
+<ol>
+<li><strong>主指标是视频级 AUROC</strong>。</li>
+<li>AP 照报，但<strong>必须与 base rate 同行</strong>，并给出 AP − base rate；<strong>以 real 为正类再算一次 AP</strong>，
+   它的 base rate 很低（≈ 0.11 / 0.016），更能拉开差距。</li>
+<li>base rate 由 manifest 生成脚本输出，<strong>每次换划分都重算</strong>，不手抄。</li>
+<li>不用 "mAP" 这个名字；两个数据集的 base rate 不同，平均 AP 没有意义。跨数据集汇总用 macro AUROC。</li>
+</ol>
+<h3 id="92">9.2 每次实验固定报告</h3>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>DFD</th>
+<th>CelebDF++</th>
+<th>Macro</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>视频级 AUROC（主）</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>AP / base rate / 提升</td>
+<td></td>
+<td></td>
+<td>—</td>
+</tr>
+<tr>
+<td>Balanced Accuracy</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>EER</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>TPR @ 5% FPR</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>随机初始化探针分布（8 次）</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>最强单项元数据捷径</td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>物理 batch / 累积步数 / 精度 / 输入尺寸 / worker 数</td>
+<td></td>
+<td></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>最后三行必须带：<strong>没有地板，分数读不出意义</strong>；两个数据集的 batch 不同，不标注就无法复现。
+区间用按身份聚类的 bootstrap（2000 次），注明携带稀缺类别的身份簇数量。</p>
+<hr />
+<h2 id="10">10. 需要改动的代码</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>改什么</th>
+<th>优先级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>evaluate_3d_bcnn.py</code>、<code>src/video_bcnn/experiment.py</code>、<code>train_3d_bcnn.py</code></td>
+<td><strong>评测和验证 1 个视频/批，视频内 clip 分块前向（每块 ≤4），分数再平均</strong>；配置项 <code>data.eval_batch_videos: 1</code>、<code>data.eval_clip_chunk: 4</code></td>
+<td><strong>必改</strong></td>
+</tr>
+<tr>
+<td><code>src/video_bcnn/model.py</code></td>
+<td><code>Stable3DFeatureExtractor</code>：新增 <code>temporal_head</code>——<code>mean</code> 时保持 V1 行为（<code>mean(dim=2)</code> 后 2D 池化），<code>tcn</code> 时改用 <code>AdaptiveAvgPool3d((None,4,4))</code> + <code>BatchNorm3d</code>，输出 <code>[B,T,512]</code></td>
+<td>必改</td>
+</tr>
+<tr>
+<td><code>src/video_bcnn/model.py</code></td>
+<td>新增 <code>TemporalConvNet</code>（两层残差 Conv1d + BN + GELU）和时间 GAP；与 3D-CNN 合成一个"提取器"模块，<strong>检查点一起保存</strong>，Phase B/C 一起加载</td>
+<td>必改</td>
+</tr>
+<tr>
+<td><code>src/video_bcnn/model.py</code></td>
+<td><code>VideoBayesianCNN</code>：写死的 <code>fc1</code>/<code>out</code> 改成可配置隐藏层列表 + GELU</td>
+<td>必改</td>
+</tr>
+<tr>
+<td><code>pretrain_extractor.py</code></td>
+<td>AMP（<code>torch.cuda.amp.autocast</code> + <code>GradScaler</code>，3080 Ti 也可用 bf16）；<code>--grad-accum-steps</code>；<code>--temporal-head</code>；<code>--hidden-dim 0</code> 表示单层 Linear；每个物理 batch 内 real/fake 各半</td>
+<td>必改</td>
+</tr>
+<tr>
+<td><code>scripts/build_manifest.py</code></td>
+<td><code>--protocol p05</code>：按 <code>source_clip</code> 家族分层划分（<code>p0</code> 按视频划分，作对照），与现有 P1 并存；summary 输出每个 split 的 base rate</td>
+<td>必改</td>
+</tr>
+<tr>
+<td><code>src/video_bcnn/metrics.py:93</code></td>
+<td>AP 的正类方向 + 同时返回 base rate</td>
+<td>必改</td>
+</tr>
+<tr>
+<td><code>scripts/feature_diagnostics.py</code></td>
+<td>支持 512 维和带 TCN 的检查点</td>
+<td>必改</td>
+</tr>
+<tr>
+<td><code>src/video_bcnn/model.py</code>、<code>pretrain_extractor.py</code></td>
+<td><code>--temporal-agg</code>：gap / max / attn / cls / flatten / flatten64（E4′）；<code>--seed</code></td>
+<td>E4′ 前</td>
+</tr>
+<tr>
+<td><code>src/video_bcnn/model.py</code></td>
+<td>最后的空间池化支持平均 / 最大值（<code>model.spatial_pool_mode</code>），供 DFD 使用</td>
+<td>E3-DFD 前</td>
+</tr>
+<tr>
+<td><code>scripts/feature_diagnostics.py</code></td>
+<td><code>--spatial-pools</code>：对同一批 stage 3 特征图试多种空间池化（筛查 S）</td>
+<td>E3-DFD 前</td>
+</tr>
+<tr>
+<td><code>pretrain_extractor.py</code></td>
+<td><code>--backbone mc3_18_k400</code>（E7）</td>
+<td>E7 前</td>
+</tr>
+<tr>
+<td><code>scripts/feature_diagnostics.py</code>、<code>train_3d_bcnn.py</code></td>
+<td>支持 <code>--backbone mc3_18_k400</code> 的冻结提取器（E7b）</td>
+<td>E7b 前</td>
+</tr>
+<tr>
+<td><code>src/video_bcnn/data.py</code></td>
+<td>worker 返回 uint8，归一化挪到 GPU</td>
+<td>推荐</td>
+</tr>
+<tr>
+<td><code>train_3d_bcnn.py</code></td>
+<td>Phase C 特征缓存</td>
+<td>推荐</td>
+</tr>
+<tr>
+<td><code>src/video_bcnn/model.py</code></td>
+<td>conv1 空间 stride 做成配置项，默认 1（A12 用 2）</td>
+<td>消融</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="11_1">11. 记录规范</h2>
+<ul>
+<li>每次运行写 <code>history.csv/json</code> 和 <code>config.json</code>，记下物理 batch、累积步数、精度、worker 数、git revision。</li>
+<li>记 <code>embedding_variance_mean</code>、各 stage 的 <code>saturated_fraction</code> 与 <code>output_std</code>；新增 TCN 各层输出标准差、残差支路权重范数、每 epoch 峰值显存、每 epoch 耗时。</li>
+<li>Phase C 记 ρ、σ 均值。V1 已证明 σ 从 epoch 1 到 17 停在 0.006716 不动，原因是 KL 对 ρ 的有效梯度只有 1e-6 量级——
+  <strong>梯度太弱，不是 KL 太强</strong>。新头参数少 53 倍，这个量级会变，要重新观察。</li>
+<li>评测报告写到检查点旁边，不要写到配置里不带 run suffix 的 <code>report_dir</code>（V1 因此覆盖过一份报告）。</li>
+</ul>
+<hr />
+<h2 id="12_1">12. 已知的开放问题</h2>
+<ol>
+<li><strong>clip 级标签噪声</strong>：视频级的 "fake" 标签贴到 32 帧窗口上，窗口内可能没有可见篡改，这给 BCE 设了下限。
+   TalkingFace 尤其严重，它占 CelebDF++ 测试伪造视频的 78.8%。</li>
+<li><strong>Leyva 原文 FC1 后有没有激活</strong>：旧代码的线性头来源无从考证。若原文有激活，V1 就是复现错误而不只是设计选择，需要回去查原文。</li>
+<li><strong>方案的叫法</strong>：见第 5 节。“单类 / data-agnostic”的主张目前只能由 E7b 支撑。</li>
+</ol>
+<hr />
+<h2 id="_1">附录：相邻时间步的重叠，以及"跳步"该放在哪</h2>
+<p>三层 3D 卷积（时间核 3、stride 1）让输出第 t 步看输入的 t−3…t+3 共 7 步，相邻输出步共享其中 6 步。
+<strong>重叠不是问题</strong>：空间上 5×5 stride 1 的卷积相邻输出也共享 80% 的窗口；重叠带来平移等变性——
+同一个瑕疵出现在第 10 帧还是第 11 帧，得到的是同样的响应、只是位置平移。
+真正该看的是"感受野 / clip 长度"：V1 是 7/8 = 88%，V2 是 7/32 = 22%，相隔 7 步以上的输出完全不共享输入。</p>
+<p>"跳步"的直觉有三个成立的落点，按优先级：</p>
+<table>
+<thead>
+<tr>
+<th>落点</th>
+<th>做法</th>
+<th>效果</th>
+<th>对应</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>输入采样</td>
+<td>从原视频每隔 s 帧取一帧</td>
+<td>覆盖 32·s 帧的真实时长，<strong>网络内仍有 32 个时间步</strong></td>
+<td>A11，优先</td>
+</tr>
+<tr>
+<td>TCN 内部</td>
+<td>dilation 1、2（、4）</td>
+<td>在高层描述子上扩大视野，不减时间步</td>
+<td>主线已含，A1 扩展</td>
+</tr>
+<tr>
+<td>提取器内部</td>
+<td>时间 dilation (1,2,4)，或 stage 3 时间 stride 2</td>
+<td>前者感受野 7→15；后者 T 32→16 省算力</td>
+<td>A9、A8</td>
+</tr>
+</tbody>
+</table>
+<p>不建议在 stage 1 设时间 stride：那是在语义信息最少的地方丢时间分辨率，deepfake 的线索常常只是一两帧的闪烁。
+图 3画出了这三个杠杆在时间轴上的位置。</p>
+</div>
+<script>
+document.querySelectorAll('table').forEach(function (t) {
+  var w = document.createElement('div'); w.className = 'tablewrap';
+  t.parentNode.insertBefore(w, t); w.appendChild(t);
+});
+</script>
+</body>
+</html>

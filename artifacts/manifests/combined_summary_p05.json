@@ -1,0 +1,63 @@
+{
+  "protocol": "p05",
+  "rows_total": 57517,
+  "rows_active": 57517,
+  "counts": {
+    "CelebDFv3:test:fake": 8165,
+    "CelebDFv3:test:real": 133,
+    "CelebDFv3:train:fake": 36960,
+    "CelebDFv3:train:real": 623,
+    "CelebDFv3:val:fake": 8071,
+    "CelebDFv3:val:real": 134,
+    "DFD:test:fake": 481,
+    "DFD:test:real": 54,
+    "DFD:train:fake": 2115,
+    "DFD:train:real": 254,
+    "DFD:val:fake": 472,
+    "DFD:val:real": 55
+  },
+  "source_family_overlap": {
+    "CelebDFv3:train/val": 0,
+    "CelebDFv3:train/test": 0,
+    "CelebDFv3:val/test": 0,
+    "DFD:train/val": 0,
+    "DFD:train/test": 0,
+    "DFD:val/test": 0
+  },
+  "base_rates": {
+    "CelebDFv3:train": {
+      "fake": 0.9834233563047122,
+      "real": 0.016576643695287763
+    },
+    "CelebDFv3:val": {
+      "fake": 0.9836684948202316,
+      "real": 0.016331505179768432
+    },
+    "CelebDFv3:test": {
+      "fake": 0.9839720414557724,
+      "real": 0.016027958544227526
+    },
+    "DFD:train": {
+      "fake": 0.8927817644575771,
+      "real": 0.10721823554242296
+    },
+    "DFD:val": {
+      "fake": 0.8956356736242884,
+      "real": 0.10436432637571158
+    },
+    "DFD:test": {
+      "fake": 0.8990654205607477,
+      "real": 0.10093457943925234
+    }
+  },
+  "roots": {
+    "DFD": "E:\\PhD\\Deepfake Video TCN+BCNN\\Datasets\\DFD-Kaggle",
+    "CelebDFv3": "E:\\PhD\\Deepfake Video TCN+BCNN\\Datasets\\CelebDFv3\\CelebDFv3"
+  },
+  "seed": 42,
+  "ratios": {
+    "train": 0.7,
+    "val": 0.15,
+    "test": 0.15000000000000005
+  }
+}

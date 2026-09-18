@@ -1,0 +1,61 @@
+# Python / IDE
+__pycache__/
+.idea/
+.vscode/
+*.py[cod]
+
+# Large archives. Result bundles downloaded off the GPU box live beside the
+# code, so *.tgz has to be here too: without it `git add -A` sweeps every
+# run's archive into the repository.
+*.rar
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+dfd_results
+
+# Training outputs. Manifests are tracked on purpose: they define the identity
+# split, and rebuilding them on another machine would silently change the
+# protocol if that machine's dataset copy differs by even one file.
+artifacts/*
+!artifacts/manifests/
+artifacts/manifests/*
+!artifacts/manifests/*.csv
+!artifacts/manifests/*.json
+checkpoints/
+models/
+weights/
+outputs/
+results/
+runs/
+logs/
+wandb/
+
+# Model files
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.h5
+*.pkl
+*.npy
+*.npz
+
+# Local machine paths (copy remote_env.example.sh and edit)
+remote_env.sh
+.env
+
+# Harvested run numbers: curves, summaries and evaluation reports.
+# Small and text-only; the checkpoints they came from stay out.
+!results/
+
+# Local-only mirror of run folders pulled off the workstation before it is
+# returned. The checkpoints inside are the point, and they are far too large
+# for git; the logs beside them are already in results/.
+checkpoints_backup/
+
+# Downloads pulled off the rented pod for one-off analysis, kept out of git for
+# size: 290 MB of embeddings, logs and score dumps whose numbers already live in
+# results/. Delete freely once the pod is returned.
+scratch_archive/

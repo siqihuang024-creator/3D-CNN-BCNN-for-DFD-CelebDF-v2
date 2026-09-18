@@ -1,0 +1,15 @@
+# Install a CUDA-enabled torch/torchvision pair for the target GPU separately,
+# e.g. pip install torch --index-url https://download.pytorch.org/whl/cu121
+#
+# Ranges rather than pins: the original environment is Python 3.7 with
+# torch 1.13, and those exact builds have no wheels on the Python 3.10/3.11
+# images that rented GPU hosts ship. numpy is held below 2.0 because older
+# OpenCV and pyro/torch combinations break against the 2.x ABI.
+numpy>=1.21,<2.0
+opencv-python-headless>=4.5,<5
+Pillow>=8.4
+PyYAML>=6.0
+scikit-learn>=1.0
+tqdm>=4.64
+matplotlib>=3.5
+pyro-ppl>=1.8.6

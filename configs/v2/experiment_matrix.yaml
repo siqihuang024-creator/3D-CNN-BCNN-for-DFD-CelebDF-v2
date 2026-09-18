@@ -1,0 +1,41 @@
+# Overrides relative to phase_a_<dataset>.yaml. Run each selected E4-prime
+# aggregation with seeds 42, 43 and 44; E0-E4 may use seed 42 for screening.
+E0:
+  data: {clip_length: 8}
+  model: {temporal_steps: 8, spatial_output_size: 22, feature_dim: 15488,
+          temporal_head: mean, temporal_aggregation: gap}
+  train: {physical_batch_size: 1, gradient_accumulation_steps: 1}
+E1:
+  model: {spatial_output_size: 22, feature_dim: 15488,
+          temporal_head: mean, temporal_aggregation: gap}
+  train: {physical_batch_size: 1, gradient_accumulation_steps: 1}
+E2_celeb:
+  model: {spatial_output_size: 22, feature_dim: 15488,
+          temporal_head: mean, temporal_aggregation: gap}
+  train: {physical_batch_size: 8, gradient_accumulation_steps: 1}
+E2_dfd:
+  model: {spatial_output_size: 22, feature_dim: 15488,
+          temporal_head: mean, temporal_aggregation: gap}
+  train: {physical_batch_size: 4, gradient_accumulation_steps: 2}
+E3:
+  model: {spatial_output_size: 4, feature_dim: 512,
+          temporal_head: mean, temporal_aggregation: gap}
+E4_gap: {model: {temporal_head: tcn, temporal_aggregation: gap}}
+E4_max: {model: {temporal_head: tcn, temporal_aggregation: max}}
+E4_attention: {model: {temporal_head: tcn, temporal_aggregation: attention}}
+E4_cls: {model: {temporal_head: tcn, temporal_aggregation: cls}}
+E4_flatten: {model: {temporal_head: tcn, temporal_aggregation: flatten}}
+E4_flatten64: {model: {temporal_head: tcn, temporal_aggregation: flatten64}}
+E7_mc3:
+  model: {architecture: mc3_18, pretrained: true, temporal_aggregation: gap,
+          feature_dim: 512}
+  data:
+    normalize_mean: [0.43216, 0.394666, 0.37645]
+    normalize_std: [0.22803, 0.22145, 0.216989]
+  train: {physical_batch_size: 4, gradient_accumulation_steps: 2}
+E7b_mc3_frozen:
+  model: {architecture: mc3_18, pretrained: true, temporal_aggregation: gap,
+          feature_dim: 512}
+  data:
+    normalize_mean: [0.43216, 0.394666, 0.37645]
+    normalize_std: [0.22803, 0.22145, 0.216989]
