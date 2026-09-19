@@ -179,4 +179,6 @@ def runtime_metadata(config, project_root=None):
                                 int(train.get("gradient_accumulation_steps", 1)),
         "precision": train.get("precision", "fp32"),
         "num_workers": int(config.get("data", {}).get("num_workers", 0)),
+        "cudnn_deterministic": bool(torch.backends.cudnn.deterministic),
+        "cudnn_benchmark": bool(torch.backends.cudnn.benchmark),
     }

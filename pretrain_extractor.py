@@ -15,10 +15,12 @@ from tqdm import tqdm
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from video_bcnn.data import load_manifest, seed_worker, skip_unreadable_collate
+from video_bcnn.data import (load_manifest, preflight_face_cache, seed_worker,
+                             skip_unreadable_collate)
 from video_bcnn.evaluation import score_deterministic
 from video_bcnn.experiment import (BalancedBatchSampler, GroupBalancedEpochSampler,
-                                   active_records, make_dataset, select_records)
+                                   active_records, capped_validation_records,
+                                   make_dataset, select_records)
 from video_bcnn.metrics import calibrate_threshold, detection_metrics
 from video_bcnn.model import DeterministicHead, build_feature_extractor
 from video_bcnn.reporting import json_safe, save_history
@@ -55,19 +57,27 @@ def main():
     parser.add_argument("--dataset-root", action="append", default=None, metavar="NAME=PATH")
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--temporal-aggregation", choices=[
+        "gap", "max", "attention", "cls", "flatten", "flatten64"], default=None)
     parser.add_argument("--smoke-test", type=int, default=None, metavar="BATCHES")
     args = parser.parse_args()
 
     config = apply_experiment(load_config(args.config), args.matrix, args.experiment)
     if args.seed is not None:
         config["seed"] = int(args.seed)
+    if args.temporal_aggregation is not None:
+        config["model"]["temporal_aggregation"] = args.temporal_aggregation
     config = override_dataset_roots(config, args.dataset_root)
     override_num_workers(config, args.num_workers)
     default_run = config["train"]["run_dir"]
     if args.experiment:
         dataset_tag = "-".join(name.lower() for name in config["data"].get("active_datasets", []))
+        aggregation = config["model"].get("temporal_aggregation", "gap")
+        suffix = args.experiment.lower()
+        if not suffix.endswith("_" + aggregation):
+            suffix += "_" + aggregation
         default_run = str(Path(default_run).parent /
-                          ("{}_{}_seed{}".format(dataset_tag, args.experiment.lower(),
+                          ("{}_{}_seed{}".format(dataset_tag, suffix,
                                                 config.get("seed", 42))))
     run_dir = Path(args.run_dir or default_run)
     config["train"]["run_dir"] = str(run_dir)
@@ -82,26 +92,36 @@ def main():
         raise ValueError("Manifest must contain non-empty train and val splits.")
     if {int(row["label"]) for row in train_records} != {0, 1}:
         raise ValueError("Phase A needs both real and fake training videos.")
+    # Fixed selection seed: runs that differ only in training seed must pick
+    # their best epoch on the same validation videos.
+    val_records = capped_validation_records(
+        val_records, int(config["data"].get("selection_seed", 42)),
+        config["data"].get("selection_max_fakes_per_dataset", 1000))
     if args.smoke_test:
         # Manifests are sorted real-first; truncating the loader would otherwise
         # score one class only and never exercise AUROC/AP/checkpoint selection.
         per_class = max(2, int(args.smoke_test))
         val_records = ([row for row in val_records if int(row["label"]) == 1][:per_class] +
                        [row for row in val_records if int(row["label"]) == 0][:per_class])
+    preflight_face_cache(train_records + val_records, config)
 
     train_set = make_dataset(train_records, config, training=True)
     val_set = make_dataset(val_records, config, training=False,
-                           clips_per_video=config["data"].get("selection_clips_per_video", 8))
+                           clips_per_video=config["data"].get("selection_clips_per_video", 4))
     physical = int(config["train"].get("physical_batch_size", 8))
     balance_keys = tuple(config["data"].get("train_balance_keys",
                                            ["dataset", "class_name"]))
     group_count = len({tuple(row[key] for key in balance_keys) for row in train_records})
+    per_group = int(config["train"].get("clips_per_class_per_epoch", 1000))
     options = _loader_options(config, device)
     if physical >= group_count and physical % group_count == 0:
+        clips_per_epoch = group_count * per_group
+        if clips_per_epoch % physical:
+            raise ValueError("clips_per_epoch must be divisible by physical batch size.")
         sampler = BalancedBatchSampler(
             train_records, physical, int(config.get("seed", 42)),
             group_keys=balance_keys,
-            batches_per_epoch=config["train"].get("batches_per_epoch"))
+            batches_per_epoch=clips_per_epoch // physical)
         train_loader = DataLoader(train_set, batch_sampler=sampler, **options)
         batch_protocol = "every physical batch balanced"
     else:
@@ -109,7 +129,7 @@ def main():
         # the epoch. E2 is the intervention that first balances each batch.
         sampler = GroupBalancedEpochSampler(
             train_records, int(config.get("seed", 42)),
-            config["train"].get("samples_per_group", "max"),
+            per_group,
             group_keys=balance_keys)
         train_loader = DataLoader(train_set, batch_size=physical, sampler=sampler,
                                   shuffle=False, **options)
@@ -121,11 +141,10 @@ def main():
                              config["model"].get("deterministic_hidden_dim", 0),
                              config["model"].get("dropout", 0.2)).to(device)
     parameters = list(extractor.parameters()) + list(head.parameters())
-    optimizer = torch.optim.AdamW(parameters,
-                                  lr=float(config["train"].get("learning_rate", 1e-4)),
-                                  weight_decay=float(config["train"].get("weight_decay", 1e-4)))
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=int(config["train"].get("epochs", 30)))
+    optimizer = torch.optim.Adam(
+        parameters, lr=float(config["train"].get("learning_rate", 1e-4)))
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(
+        optimizer, gamma=float(config["train"].get("lr_gamma", 0.95)))
     criterion = nn.BCEWithLogitsLoss()
     accumulation = int(config["train"].get("gradient_accumulation_steps", 1))
     use_amp = config["train"].get("precision", "amp") == "amp" and device.type == "cuda"
@@ -134,6 +153,15 @@ def main():
 
     checkpoint_dir, log_dir = ensure_dir(run_dir / "checkpoints"), ensure_dir(run_dir / "logs")
     metadata = runtime_metadata(config, ROOT)
+    clips_per_epoch = (len(sampler) * physical
+                       if isinstance(sampler, BalancedBatchSampler) else len(sampler))
+    batches_per_epoch = int(np.ceil(clips_per_epoch / float(physical)))
+    metadata.update({
+        "optimizer": "Adam", "learning_rate": optimizer.param_groups[0]["lr"],
+        "lr_gamma": float(config["train"].get("lr_gamma", 0.95)),
+        "clips_per_epoch": int(clips_per_epoch),
+        "optimizer_steps_per_epoch": int(np.ceil(batches_per_epoch / float(accumulation))),
+    })
     save_json(run_dir / "config.json", json_safe(config))
     save_json(run_dir / "runtime.json", metadata)
     print("Phase A on {}: {} training / {} validation videos; physical={} accum={} "
@@ -142,9 +170,10 @@ def main():
     print("Sampling protocol: {}.".format(batch_protocol))
 
     history, best, best_epoch = [], -float("inf"), 0
-    epochs = 1 if args.smoke_test else int(config["train"].get("epochs", 30))
+    epochs = 1 if args.smoke_test else int(config["train"].get("epochs", 60))
     for epoch in range(1, epochs + 1):
         started = time.time()
+        epoch_lr = optimizer.param_groups[0]["lr"]
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
         if hasattr(sampler, "set_epoch"):
@@ -152,16 +181,19 @@ def main():
         extractor.train()
         head.train()
         optimizer.zero_grad(set_to_none=True)
-        running, seen, skipped, optimizer_updates = 0.0, 0, 0, 0
+        running, seen, optimizer_updates = 0.0, 0, 0
+        skipped_training_paths = []
         progress = tqdm(train_loader, desc="Phase A {}/{}".format(epoch, epochs))
         last_step = -1
         for step, batch in enumerate(progress):
             if args.smoke_test is not None and step >= args.smoke_test:
                 break
             last_step = step
-            if batch is None:
-                skipped += 1
+            if batch is None or batch.get("_skip_only", False):
+                skipped_training_paths.extend(
+                    [] if batch is None else batch.get("_skipped_paths", []))
                 continue
+            skipped_training_paths.extend(batch.get("_skipped_paths", []))
             clips = batch["clip"].to(device, non_blocking=True)
             targets = batch["label"].to(device, non_blocking=True).float()
             with torch.cuda.amp.autocast(enabled=use_amp):
@@ -187,9 +219,6 @@ def main():
             scaler.update()
             optimizer_updates += int(scaler.get_scale() >= scale_before)
             optimizer.zero_grad(set_to_none=True)
-        if optimizer_updates:
-            scheduler.step()
-
         scored = score_deterministic(
             extractor, head, val_loader, device,
             clip_chunk_size=int(config["data"].get("eval_clip_chunk_size", 4)),
@@ -209,8 +238,11 @@ def main():
         diagnostics = {"activation_stages": copy.deepcopy(extractor.last_activation_stats),
                        "temporal": copy.deepcopy(getattr(extractor, "last_temporal_stats", {}))}
         row = {"epoch": epoch, "train_loss": running / max(1, seen),
-               "skipped_training_clips": skipped,
-               "learning_rate": optimizer.param_groups[0]["lr"],
+               "skipped_training_clips": len(skipped_training_paths),
+               "skipped_training_paths": skipped_training_paths,
+               "skipped_validation_videos": scored["skipped_unreadable"],
+               "skipped_validation_paths": scored["skipped_paths"],
+               "learning_rate": epoch_lr,
                "selection_metric": "auroc", "selection_value": metrics["auroc"],
                "epoch_duration_seconds": duration,
                "peak_vram_bytes": (torch.cuda.max_memory_allocated(device)
@@ -226,6 +258,8 @@ def main():
             best, best_epoch = metrics["auroc"], epoch
             torch.save(payload, checkpoint_dir / "best.pt")
         save_history(history, log_dir)
+        if optimizer_updates:
+            scheduler.step()
         print("val AUROC={:.4f}, fake AP={:.4f} ({:.2f}x), real AP={:.4f} "
               "({:.2f}x), embedding-var={:.3g}".format(
               metrics["auroc"], metrics["fake_average_precision"],

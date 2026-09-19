@@ -17,9 +17,12 @@ from tqdm import tqdm
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from video_bcnn.data import load_manifest, seed_worker, skip_unreadable_collate
-from video_bcnn.evaluation import score_bayesian
-from video_bcnn.experiment import active_records, make_dataset, select_records
+from video_bcnn.data import (load_manifest, preflight_face_cache, seed_worker,
+                             skip_unreadable_collate)
+from video_bcnn.evaluation import (cache_bayesian_loader_features,
+                                   score_bayesian_cached)
+from video_bcnn.experiment import (active_records, capped_validation_records,
+                                   make_dataset, select_records)
 from video_bcnn.features import FeatureCacheDataset
 from video_bcnn.metrics import calibrate_threshold, detection_metrics
 from video_bcnn.model import VideoBayesianCNN, build_feature_extractor, freeze_extractor
@@ -77,6 +80,8 @@ def main():
                         help="Optional extractor override from configs/v2/experiment_matrix.yaml.")
     parser.add_argument("--matrix", default=str(ROOT / "configs" / "v2" / "experiment_matrix.yaml"))
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--temporal-aggregation", choices=[
+        "gap", "max", "attention", "cls", "flatten", "flatten64"], default=None)
     parser.add_argument("--dataset-root", action="append", default=None, metavar="NAME=PATH")
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--smoke-test", type=int, default=None, metavar="BATCHES")
@@ -87,13 +92,19 @@ def main():
     config = apply_experiment(load_config(args.config), args.matrix, args.experiment)
     if args.seed is not None:
         config["seed"] = int(args.seed)
+    if args.temporal_aggregation is not None:
+        config["model"]["temporal_aggregation"] = args.temporal_aggregation
     config = override_dataset_roots(config, args.dataset_root)
     override_num_workers(config, args.num_workers)
     run_dir = Path(args.run_dir or config["train"]["run_dir"])
     if args.run_dir is None and args.experiment:
         dataset_tag = "-".join(name.lower() for name in config["data"].get("active_datasets", []))
+        aggregation = config["model"].get("temporal_aggregation", "gap")
+        suffix = args.experiment.lower()
+        if not suffix.endswith("_" + aggregation):
+            suffix += "_" + aggregation
         run_dir = Path(config["train"]["run_dir"]).parent / (
-            "{}_e6_{}_seed{}".format(dataset_tag, args.experiment.lower(),
+            "{}_e6_{}_seed{}".format(dataset_tag, suffix,
                                      config.get("seed", 42)))
     config["train"]["run_dir"] = str(run_dir)
     device = resolve_device(config.get("device", "cuda"))
@@ -106,14 +117,20 @@ def main():
     val_records = select_records(records, "val")
     if not train_records or not val_records:
         raise ValueError("Phase C needs real training videos and a two-class validation split.")
+    # Fixed selection seed: runs that differ only in training seed must pick
+    # their best epoch on the same validation videos.
+    val_records = capped_validation_records(
+        val_records, int(config["data"].get("selection_seed", 42)),
+        config["data"].get("selection_max_fakes_per_dataset", 1000))
     if args.smoke_test:
         per_class = max(2, int(args.smoke_test))
         val_records = ([row for row in val_records if int(row["label"]) == 1][:per_class] +
                        [row for row in val_records if int(row["label"]) == 0][:per_class])
+    preflight_face_cache(train_records + val_records, config)
     train_set = (FeatureCacheDataset(args.feature_cache, train_records)
                  if args.feature_cache else make_dataset(train_records, config, training=True))
     val_set = make_dataset(val_records, config, training=False,
-                           clips_per_video=config["data"].get("selection_clips_per_video", 8))
+                           clips_per_video=config["data"].get("selection_clips_per_video", 4))
     options = _options(config, device)
     train_loader = DataLoader(train_set,
                               batch_size=int(config["train"].get("physical_batch_size", 8)),
@@ -130,6 +147,9 @@ def main():
     else:
         config["model"]["init_extractor"] = "torchvision KINETICS400_V1 (E7b)"
     freeze_extractor(extractor)
+    validation_cache = cache_bayesian_loader_features(
+        model, val_loader, device,
+        int(config["data"].get("eval_clip_chunk_size", 4)))
     optimizer = ClippedAdam({"lr": float(config["train"].get("learning_rate", 1e-3)),
                              "clip_norm": float(config["train"].get("gradient_clip_norm", 5.0)),
                              "lrd": float(config["train"].get("lr_decay", 0.98))})
@@ -138,13 +158,15 @@ def main():
     checkpoint_dir, log_dir = ensure_dir(run_dir / "checkpoints"), ensure_dir(run_dir / "logs")
     metadata = runtime_metadata(config, ROOT)
     metadata["precision"] = "fp32"
+    metadata["num_train_units"] = len(train_set)
+    metadata["validation_features_cached_once"] = True
     save_json(run_dir / "config.json", json_safe(config))
     save_json(run_dir / "runtime.json", metadata)
     print("Phase C on {}: {} real training videos; extractor frozen in eval mode; "
           "Bayesian head {}->256->64->1, fp32.".format(
           device, len(train_records), extractor.feature_dim))
 
-    history, best, best_epoch = [], -float("inf"), 0
+    history, best, best_epoch, patience = [], -float("inf"), 0, 0
     epochs = 1 if args.smoke_test else int(config["train"].get("epochs", 50))
     mc_samples = int(config["train"].get("mc_samples", 30))
     for epoch in range(1, epochs + 1):
@@ -154,14 +176,16 @@ def main():
             raise RuntimeError("Frozen extractor unexpectedly contains trainable parameters.")
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
-        total, batches, skipped = 0.0, 0, 0
+        total, batches, skipped_training_paths = 0.0, 0, []
         progress = tqdm(train_loader, desc="Phase C {}/{}".format(epoch, epochs))
         for step, batch in enumerate(progress):
             if args.smoke_test is not None and step >= args.smoke_test:
                 break
-            if batch is None:
-                skipped += 1
+            if batch is None or batch.get("_skip_only", False):
+                skipped_training_paths.extend(
+                    [] if batch is None else batch.get("_skipped_paths", []))
                 continue
+            skipped_training_paths.extend(batch.get("_skipped_paths", []))
             if "feature" in batch:
                 features = batch["feature"].to(device, non_blocking=True)
             else:
@@ -169,22 +193,23 @@ def main():
                 with torch.no_grad():
                     features = extractor(clips).detach()
             targets = torch.ones(features.shape[0], device=device)
-            loss = float(svi.step(features, targets, len(train_records)))
+            loss = float(svi.step(features, targets, len(train_set)))
             if not np.isfinite(loss):
                 raise FloatingPointError("Non-finite ELBO at epoch {}.".format(epoch))
             total += loss
             batches += 1
             progress.set_postfix(elbo="{:.4f}".format(total / batches))
 
-        values = score_bayesian(
-            model, val_loader, device, mc_samples,
-            clip_chunk_size=int(config["data"].get("eval_clip_chunk_size", 4)))
+        values = score_bayesian_cached(model, validation_cache, device, mc_samples)
         metrics, threshold = _metrics(values, config["train"].get("calibration_fpr", 0.05))
         diagnostics = model.diagnostics()
         diagnostics["activation_stages"] = copy.deepcopy(extractor.last_activation_stats)
         diagnostics["temporal"] = copy.deepcopy(getattr(extractor, "last_temporal_stats", {}))
         row = {"epoch": epoch, "train_loss": total / max(1, batches),
-               "skipped_training_clips": skipped,
+               "skipped_training_clips": len(skipped_training_paths),
+               "skipped_training_paths": skipped_training_paths,
+               "skipped_validation_videos": values["skipped_unreadable"],
+               "skipped_validation_paths": values["skipped_paths"],
                "learning_rate": float(config["train"].get("learning_rate", 1e-3)),
                "selection_metric": "auroc", "selection_value": metrics["auroc"],
                "epoch_duration_seconds": time.time() - started,
@@ -198,15 +223,24 @@ def main():
                    "config": copy.deepcopy(config), "validation": metrics,
                    "threshold": threshold, "runtime": metadata, "score_sign": -1.0}
         torch.save(payload, checkpoint_dir / "last.pt")
-        if best_epoch == 0 or metrics["auroc"] > best:
+        minimum = float(config["train"].get("selection_min_metric_improvement", 0.002))
+        improved = best_epoch == 0 or metrics["auroc"] >= best + minimum
+        if improved:
             best, best_epoch = metrics["auroc"], epoch
+            patience = 0
             torch.save(payload, checkpoint_dir / "best.pt")
+        else:
+            patience += 1
         save_history(history, log_dir)
         print("val AUROC={:.4f}; fake AP={:.4f} ({:.2f}x); real AP={:.4f} "
               "({:.2f}x); sigma mean={:.3g}.".format(
               metrics["auroc"], metrics["fake_average_precision"],
               metrics["fake_ap_lift"], metrics["real_average_precision"],
               metrics["real_ap_lift"], diagnostics["sigma_mean"]))
+        if patience >= int(config["train"].get("early_stopping_patience", 8)):
+            print("Early stopping at epoch {}; best epoch {} AUROC {:.4f}.".format(
+                epoch, best_epoch, best))
+            break
     print("Best Phase-C epoch {} AUROC {:.4f}: {}".format(
         best_epoch, best, (checkpoint_dir / "best.pt").resolve()))
     return 0

@@ -44,7 +44,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
-from video_bcnn.data import load_manifest  # noqa: E402
+from video_bcnn.data import load_manifest, preflight_face_cache  # noqa: E402
 from video_bcnn.experiment import (  # noqa: E402
     active_records, make_dataset, select_records,
 )
@@ -80,16 +80,21 @@ def auroc(labels, scores):
                  / (len(positive) * len(negative)))
 
 
-def collect_features(extractor, dataset, device):
+def collect_features(extractor, dataset, device, clip_chunk_size=2):
     """One mean-pooled feature vector per video, with its label and identity."""
     features, labels, identities = [], [], []
     extractor.eval()
     with torch.no_grad():
         for index in range(len(dataset)):
             item = dataset[index]
-            if item is None:
+            if item is None or item.get("_skip_video", False):
                 continue
-            vector = extractor(item["clips"].to(device)).double().mean(dim=0).cpu()
+            chunks = []
+            clips = item["clips"]
+            for start in range(0, clips.shape[0], int(clip_chunk_size)):
+                chunks.append(extractor(
+                    clips[start:start + int(clip_chunk_size)].to(device)).double().cpu())
+            vector = torch.cat(chunks, dim=0).mean(dim=0)
             features.append(vector)
             labels.append(int(item["label"]))
             # Falling back to the path keeps every video in its own fold rather
@@ -317,6 +322,7 @@ def main():
     chosen_real = spread_by_identity(reals, half)
     chosen_fake = spread_by_identity(fakes, half)
     records = chosen_real + chosen_fake
+    preflight_face_cache(records, config)
     covered = sorted({row.get("target_id") or row["path"] for row in records})
     print("scoring {} videos from split {!r} ({} real, {} fake) across {} "
           "identities, {} clips each".format(
@@ -350,7 +356,11 @@ def main():
     record["trained"]["held_out_probe"] = trained
 
     if args.random_init:
-        fresh, _ = build_model(config, device)
+        random_config = dict(config)
+        random_config["model"] = dict(config["model"])
+        if random_config["model"].get("architecture") == "mc3_18":
+            random_config["model"]["pretrained"] = False
+        fresh, _ = build_model(random_config, device)
         print("\nextracting features with an untrained extractor...")
         base_features, base_labels, base_identities = collect_features(
             fresh, dataset, device)

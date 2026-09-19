@@ -12,7 +12,8 @@ from torch.utils.data import DataLoader
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from video_bcnn.data import load_manifest, seed_worker, skip_unreadable_collate
+from video_bcnn.data import (load_manifest, preflight_face_cache, seed_worker,
+                             skip_unreadable_collate)
 from video_bcnn.evaluation import score_bayesian, score_deterministic
 from video_bcnn.experiment import active_records, make_dataset, select_records
 from video_bcnn.metrics import (calibrate_threshold, clustered_auroc_interval,
@@ -27,8 +28,18 @@ from train_3d_bcnn import build_model
 def evaluate(values, threshold, draws, seed):
     labels, scores = values["labels"], values["scores"]
     metrics = detection_metrics(labels, scores, threshold)
-    metrics["clustered_bootstrap"] = clustered_auroc_interval(
-        1 - labels, scores, values["source_clips"], draws=draws, seed=seed)
+    fake_labels = 1 - labels
+    def interval(clusters):
+        report = clustered_auroc_interval(
+            fake_labels, scores, clusters, draws=draws, seed=seed)
+        groups = {}
+        for label, cluster in zip(labels, clusters):
+            groups.setdefault(str(cluster), set()).add(int(label))
+        report["clusters_with_real"] = sum(1 in classes for classes in groups.values())
+        report["clusters_with_fake"] = sum(0 in classes for classes in groups.values())
+        return report
+    metrics["identity_bootstrap"] = interval(values["target_ids"])
+    metrics["source_family_bootstrap"] = interval(values["source_clips"])
     metrics["per_dataset"] = {}
     for dataset in sorted(set(values["datasets"].tolist())):
         mask = values["datasets"] == dataset
@@ -82,6 +93,7 @@ def main():
         half = max(1, int(args.max_videos) // 2)
         records = ([row for row in records if int(row["label"]) == 1][:half] +
                    [row for row in records if int(row["label"]) == 0][:half])
+    preflight_face_cache(records, config)
     dataset = make_dataset(records, config, training=False,
                            clips_per_video=config["data"].get("eval_clips_per_video", 8))
     loader = DataLoader(dataset, batch_size=1, shuffle=False,
@@ -129,7 +141,10 @@ def main():
                     "threshold_source": ("evaluation_reals" if args.recalibrate_threshold
                                          else "checkpoint"),
                     "eval_batch_size": 1,
-                    "eval_clip_chunk_size": int(config["data"].get("eval_clip_chunk_size", 4))})
+                    "eval_clip_chunk_size": int(config["data"].get("eval_clip_chunk_size", 4)),
+                    "num_videos_requested": len(records),
+                    "num_videos_scored": len(values["labels"]),
+                    "skipped_videos": values.get("skipped_paths", [])})
     checkpoint_dir = Path(args.checkpoint).resolve().parent
     report_dir = checkpoint_dir.parent / "reports"
     report = save_evaluation_report(values, metrics, report_dir, args.split)
@@ -137,9 +152,9 @@ def main():
         np.savez_compressed(report_dir / "{}_embeddings.npz".format(args.split),
                             embeddings=values["embeddings"], labels=values["labels"],
                             paths=np.asarray(values["paths"]))
-    print("{} AUROC={:.4f}, 95% clustered CI [{:.4f}, {:.4f}]".format(
-        args.split, metrics["auroc"], metrics["clustered_bootstrap"]["low"],
-        metrics["clustered_bootstrap"]["high"]))
+    print("{} AUROC={:.4f}, identity-clustered 95% CI [{:.4f}, {:.4f}]".format(
+        args.split, metrics["auroc"], metrics["identity_bootstrap"]["low"],
+        metrics["identity_bootstrap"]["high"]))
     print("Report: {}".format(report))
     return 0
 

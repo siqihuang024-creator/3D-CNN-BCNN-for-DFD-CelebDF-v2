@@ -17,6 +17,33 @@ class UnreadableVideoError(RuntimeError):
     """A video the decoder cannot open at all, after retries."""
 
 
+class MissingFaceCacheError(RuntimeError):
+    """Required protocol face detections are absent; this must stop a run."""
+
+
+def preflight_face_cache(records, config, limit=10):
+    """Fail before training when a face-mode manifest lacks cached detections."""
+    data = config.get("data", config)
+    if data.get("frame_mode", "face") != "face" or not data.get("face_box_cache"):
+        return {"required": False, "checked": 0, "missing": 0}
+    cache_root = Path(data["face_box_cache"])
+    missing = []
+    for row in records:
+        path = cache_root / row["dataset"] / (Path(row["path"]).as_posix() + ".npz")
+        if not path.is_file():
+            missing.append(str(path))
+    if missing:
+        preview = "\n  ".join(missing[:int(limit)])
+        raise MissingFaceCacheError(
+            "Face-cache preflight failed: {} of {} videos have no cache file.\n"
+            "First {} missing:\n  {}\nRun scripts/cache_face_boxes.py for the "
+            "same manifest before training or evaluation.".format(
+                len(missing), len(records), min(len(missing), int(limit)), preview
+            )
+        )
+    return {"required": True, "checked": len(records), "missing": 0}
+
+
 def skip_unreadable_collate(batch):
     """Drop unreadable items instead of failing the epoch.
 
@@ -24,10 +51,16 @@ def skip_unreadable_collate(batch):
     has now ended three multi-hour runs. Returning None lets the caller count
     and report the skip rather than lose the run.
     """
-    items = [item for item in batch if item is not None]
+    skipped = [item["path"] for item in batch
+               if isinstance(item, dict) and item.get("_skip_video")]
+    items = [item for item in batch
+             if item is not None and not item.get("_skip_video", False)]
     if not items:
-        return None
-    return default_collate(items)
+        return ({"_skip_only": True, "_skipped_paths": skipped}
+                if skipped else None)
+    result = default_collate(items)
+    result["_skipped_paths"] = skipped
+    return result
 
 
 def load_manifest(path):
@@ -173,7 +206,7 @@ class VideoClipDataset(Dataset):
             return stored
         path = self._cache_path(video_path)
         if not path.exists():
-            raise UnreadableVideoError(
+            raise MissingFaceCacheError(
                 "No cached detections at {}. Run scripts/cache_face_boxes.py "
                 "over this manifest, or clear face_box_cache from the config."
                 .format(path)
@@ -618,14 +651,16 @@ class VideoClipDataset(Dataset):
         video_path = self.dataset_roots[record["dataset"]] / record["path"]
         try:
             clips, audits, fps = self._read_clips(video_path)
-        except UnreadableVideoError:
+        except UnreadableVideoError as error:
             # Signal the collate function to drop this item. Every other error
             # still propagates, so real bugs are not swallowed.
             self.unreadable.add(str(video_path))
-            return None
+            return {"_skip_video": True, "path": str(video_path),
+                    "error": str(error)}
         result = {
             "label": torch.tensor(int(record["label"]), dtype=torch.long),
             "path": str(video_path),
+            "relative_path": record["path"],
             "dataset": record["dataset"],
             "method": record["method"],
             "target_id": record.get("target_id", ""),

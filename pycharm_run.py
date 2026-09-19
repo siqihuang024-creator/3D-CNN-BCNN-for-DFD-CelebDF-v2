@@ -10,13 +10,17 @@ ROOT = Path(__file__).resolve().parent
 TASK = "phase_a"  # build_manifest | phase_a | phase_c | evaluate
 DATASET = "celeb"  # celeb | dfd
 EXPERIMENT = "E4_gap"
+TEMPORAL_AGGREGATION = "gap"  # replace with the selected E4-prime winner for E7
 SEED = 42
 MANIFEST = ROOT / "artifacts" / "manifests" / "combined_manifest_p05.csv"
 DATASET_TAG = "celebdfv3" if DATASET == "celeb" else "dfd"
+SUFFIX = EXPERIMENT.lower()
+if not SUFFIX.endswith("_" + TEMPORAL_AGGREGATION):
+    SUFFIX += "_" + TEMPORAL_AGGREGATION
 PHASE_A_CHECKPOINT = ROOT / "artifacts" / "v2" / "{}_{}_seed{}".format(
-    DATASET_TAG, EXPERIMENT.lower(), SEED) / "checkpoints" / "best.pt"
+    DATASET_TAG, SUFFIX, SEED) / "checkpoints" / "best.pt"
 PHASE_C_CHECKPOINT = ROOT / "artifacts" / "v2" / "{}_e6_{}_seed{}".format(
-    DATASET_TAG, EXPERIMENT.lower(), SEED) / "checkpoints" / "best.pt"
+    DATASET_TAG, SUFFIX, SEED) / "checkpoints" / "best.pt"
 
 
 def run(arguments):
@@ -32,11 +36,13 @@ def main():
              ROOT / "artifacts" / "manifests", "--protocol", "p05"])
     elif TASK == "phase_a":
         run([sys.executable, "pretrain_extractor.py", "--config", phase_a_config,
-             "--manifest", MANIFEST, "--experiment", EXPERIMENT, "--seed", SEED])
+             "--manifest", MANIFEST, "--experiment", EXPERIMENT, "--seed", SEED,
+             "--temporal-aggregation", TEMPORAL_AGGREGATION])
     elif TASK == "phase_c":
         run([sys.executable, "train_3d_bcnn.py", "--config", phase_c_config,
              "--manifest", MANIFEST, "--init-extractor", PHASE_A_CHECKPOINT,
-             "--experiment", EXPERIMENT, "--seed", SEED])
+             "--experiment", EXPERIMENT, "--seed", SEED,
+             "--temporal-aggregation", TEMPORAL_AGGREGATION])
     elif TASK == "evaluate":
         run([sys.executable, "evaluate_3d_bcnn.py", "--config", phase_c_config,
              "--manifest", MANIFEST, "--checkpoint", PHASE_C_CHECKPOINT,

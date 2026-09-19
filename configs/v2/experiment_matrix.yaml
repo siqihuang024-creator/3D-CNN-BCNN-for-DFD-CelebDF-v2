@@ -27,14 +27,16 @@ E4_cls: {model: {temporal_head: tcn, temporal_aggregation: cls}}
 E4_flatten: {model: {temporal_head: tcn, temporal_aggregation: flatten}}
 E4_flatten64: {model: {temporal_head: tcn, temporal_aggregation: flatten64}}
 E7_mc3:
-  model: {architecture: mc3_18, pretrained: true, temporal_aggregation: gap,
+  model: {architecture: mc3_18, pretrained: true, temporal_head: tcn,
+          temporal_aggregation: gap,
           feature_dim: 512}
   data:
     normalize_mean: [0.43216, 0.394666, 0.37645]
     normalize_std: [0.22803, 0.22145, 0.216989]
   train: {physical_batch_size: 4, gradient_accumulation_steps: 2}
 E7b_mc3_frozen:
-  model: {architecture: mc3_18, pretrained: true, temporal_aggregation: gap,
+  model: {architecture: mc3_18, pretrained: true, temporal_head: none,
+          temporal_aggregation: gap,
           feature_dim: 512}
   data:
     normalize_mean: [0.43216, 0.394666, 0.37645]

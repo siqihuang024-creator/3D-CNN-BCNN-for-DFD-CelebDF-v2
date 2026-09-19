@@ -13,11 +13,14 @@ from torch import nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from video_bcnn.data import VideoClipDataset, skip_unreadable_collate
-from video_bcnn.experiment import BalancedBatchSampler
+from video_bcnn.data import (MissingFaceCacheError, VideoClipDataset,
+                             preflight_face_cache, skip_unreadable_collate)
+from video_bcnn.evaluation import score_bayesian_cached
+from video_bcnn.experiment import BalancedBatchSampler, GroupBalancedEpochSampler
 from video_bcnn.features import FeatureCacheDataset
 from video_bcnn.metrics import calibrate_threshold, detection_metrics
-from video_bcnn.model import (DeterministicHead, Stable3DFeatureExtractor,
+from video_bcnn.model import (DeterministicHead, MC3FeatureExtractor,
+                              ResidualTemporalBlock, Stable3DFeatureExtractor,
                               TemporalAggregator, VideoBayesianCNN,
                               freeze_extractor)
 from video_bcnn.protocols import assign_protocol, protocol_audit
@@ -41,6 +44,25 @@ class ModelTests(unittest.TestCase):
         model = Stable3DFeatureExtractor(temporal_head="mean",
                                          spatial_output_size=[4, 7])
         self.assertEqual(model.feature_dim, 32 * 4 * 7)
+
+    def test_final_max_pool_does_not_change_stage_pooling(self):
+        model = Stable3DFeatureExtractor(temporal_head="mean",
+                                         stage_pool_type="avg",
+                                         final_pool_type="max")
+        self.assertIsInstance(model.pool1, nn.AvgPool3d)
+        self.assertEqual(model.final_pool_type, "max")
+
+    def test_zero_residual_branch_is_identity(self):
+        block = ResidualTemporalBlock(8).eval()
+        nn.init.zeros_(block.conv.weight)
+        values = torch.randn(2, 8, 7)
+        self.assertTrue(torch.equal(block(values), values))
+
+    def test_e7_tcn_parameter_budget_and_e7b_control(self):
+        e7 = MC3FeatureExtractor(pretrained=False, temporal_head="tcn")
+        e7b = MC3FeatureExtractor(pretrained=False, temporal_head="none")
+        self.assertEqual(sum(p.numel() for p in e7.parameters()), 13065152)
+        self.assertFalse(hasattr(e7b, "tcn"))
 
     def test_all_aggregation_options_return_512(self):
         values = torch.randn(2, 8, 512)
@@ -87,6 +109,31 @@ class BayesianTests(unittest.TestCase):
         self.assertEqual(tuple(model.posterior_loc_from_features(torch.randn(3, 8)).shape), (3,))
         self.assertGreater(model.diagnostics()["sigma_mean"], 0)
 
+    def test_nonlinear_head_runs_before_clip_averaging(self):
+        class Extractor(nn.Module):
+            feature_dim = 1
+            def __init__(self):
+                super().__init__()
+                self.anchor = nn.Parameter(torch.zeros(1))
+
+        class Model:
+            feature_extractor = Extractor()
+            @staticmethod
+            def posterior_loc_from_features(features):
+                return features[:, 0].square()
+
+        cached = {
+            "features": torch.tensor([[-1.0], [3.0]]),
+            "offsets": [(0, 2)], "labels": [1], "paths": ["a.mp4"],
+            "relative_paths": ["a.mp4"], "datasets": ["DFD"],
+            "methods": ["real"], "target_ids": ["id"], "donor_ids": [""],
+            "source_clips": ["id"], "skipped_paths": [],
+        }
+        result = score_bayesian_cached(Model(), cached, torch.device("cpu"),
+                                       mc_samples=0)
+        self.assertEqual(result["means"].tolist(), [5.0])
+        self.assertEqual(result["scores"].tolist(), [-5.0])
+
 
 class ProtocolTests(unittest.TestCase):
     @staticmethod
@@ -131,6 +178,17 @@ class BatchAndMetricTests(unittest.TestCase):
             self.assertEqual(classes.count("real"), 2)
             self.assertEqual(classes.count("fake"), 2)
 
+    def test_phase_a_epoch_budget_is_1000_clips_per_class(self):
+        records = ([{"dataset": "DFD", "class_name": "real"}] * 3 +
+                   [{"dataset": "DFD", "class_name": "fake"}] * 20)
+        balanced = BalancedBatchSampler(records, batch_size=8,
+                                        batches_per_epoch=250)
+        baseline = GroupBalancedEpochSampler(
+            records, seed=42, samples_per_group=1000,
+            group_keys=("dataset", "class_name"))
+        self.assertEqual(len(balanced) * 8, 2000)
+        self.assertEqual(len(baseline), 2000)
+
     def test_metrics_report_both_ap_directions_and_lift(self):
         labels = np.asarray([1, 1, 0, 0])
         scores = np.asarray([0.1, 0.2, 0.8, 0.9])
@@ -140,6 +198,7 @@ class BatchAndMetricTests(unittest.TestCase):
         self.assertEqual(metrics["fake_average_precision"], 1.0)
         self.assertEqual(metrics["real_average_precision"], 1.0)
         self.assertEqual(metrics["fake_ap_lift"], 2.0)
+        self.assertEqual(metrics["fake_ap_gain"], 0.5)
 
 
 class DataTests(unittest.TestCase):
@@ -161,6 +220,28 @@ class DataTests(unittest.TestCase):
         batch = skip_unreadable_collate([None, {"label": torch.tensor(1)}])
         self.assertEqual(batch["label"].tolist(), [1])
 
+    def test_missing_face_cache_is_fatal_not_an_unreadable_skip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "videos"
+            cache = Path(directory) / "cache"
+            dataset = VideoClipDataset.__new__(VideoClipDataset)
+            dataset.records = [{"dataset": "DFD", "path": "missing.mp4"}]
+            dataset.dataset_roots = {"DFD": root}
+            dataset.face_box_cache = cache
+            dataset.detection_store = {}
+            dataset.unreadable = set()
+            dataset._read_clips = lambda path: dataset._cached_detections(path)
+            with self.assertRaises(MissingFaceCacheError):
+                dataset[0]
+
+    def test_face_cache_preflight_lists_missing_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = {"data": {"frame_mode": "face",
+                                "face_box_cache": directory}}
+            rows = [{"dataset": "DFD", "path": "a.mp4"}]
+            with self.assertRaises(MissingFaceCacheError):
+                preflight_face_cache(rows, config)
+
     def test_feature_cache_matches_manifest_keys_not_row_order(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "features.npz"
@@ -171,6 +252,38 @@ class DataTests(unittest.TestCase):
                 {"dataset": "DFD", "path": "b.mp4"},
                 {"dataset": "DFD", "path": "a.mp4"}])
             self.assertEqual(cache[0]["feature"].tolist(), [3.0, 4.0])
+
+    def test_feature_cache_keeps_all_sixteen_clips_per_video(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "features.npz"
+            np.savez(path, features=np.arange(32, dtype=np.float32).reshape(16, 2),
+                     datasets=np.asarray(["DFD"] * 16),
+                     paths=np.asarray(["a.mp4"] * 16),
+                     clip_indices=np.arange(16))
+            cache = FeatureCacheDataset(
+                path, [{"dataset": "DFD", "path": "a.mp4"}])
+            self.assertEqual(len(cache), 16)
+            self.assertEqual(cache[15]["clip_index"].item(), 15)
+
+
+class FinalReviewTests(unittest.TestCase):
+    def test_json_safe_handles_numpy_bool_and_arrays(self):
+        import json
+        import numpy as np
+        from video_bcnn.reporting import json_safe
+        value = json_safe({"wins": [np.float64(0.7) > np.float64(0.6)],
+                           "matrix": np.arange(3), "nan": float("nan")})
+        self.assertEqual(json.loads(json.dumps(value, allow_nan=False)),
+                         {"wins": [True], "matrix": [0, 1, 2], "nan": None})
+
+    def test_pool_screen_never_defaults_an_incomputable_probe_to_avg(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        from pool_screen import recommend_final_pool
+        self.assertEqual(recommend_final_pool(float("nan"), [0.01]), "undetermined")
+        self.assertEqual(recommend_final_pool(0.05, [float("nan")]), "undetermined")
+        self.assertEqual(recommend_final_pool(0.05, [0.01, 0.02]), "max")
+        self.assertEqual(recommend_final_pool(0.01, [0.01, 0.02]), "avg")
 
 
 if __name__ == "__main__":

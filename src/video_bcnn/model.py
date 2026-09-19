@@ -49,7 +49,7 @@ class ResidualTemporalBlock(nn.Module):
         self.activation = nn.GELU()
 
     def forward(self, values):
-        return self.activation(values + self.norm(self.conv(values)))
+        return values + self.activation(self.norm(self.conv(values)))
 
 
 class TemporalAggregator(nn.Module):
@@ -111,13 +111,16 @@ class Stable3DFeatureExtractor(nn.Module):
 
     def __init__(self, temporal_kernel_size=3, conv_channels=(16, 24, 32),
                  activation="relu", spatial_output_size=4,
-                 spatial_pool_type="avg", norm="batch", temporal_head="tcn",
+                 stage_pool_type="avg", final_pool_type="avg", norm="batch", temporal_head="tcn",
                  temporal_aggregation="gap", temporal_steps=32,
                  conv1_spatial_stride=1, tcn_channels=512, **legacy):
         super().__init__()
         # Backward compatible name used by V1 configs.
-        if "pool_type" in legacy:
-            spatial_pool_type = legacy["pool_type"]
+        ambiguous = [key for key in ("pool_type", "spatial_pool_type") if key in legacy]
+        if ambiguous:
+            raise ValueError(
+                "{} is ambiguous in V2; use stage_pool_type and final_pool_type."
+                .format(ambiguous[0]))
         kernel_size = int(temporal_kernel_size)
         channels = tuple(int(v) for v in conv_channels)
         if kernel_size < 1 or kernel_size % 2 == 0:
@@ -139,15 +142,16 @@ class Stable3DFeatureExtractor(nn.Module):
                                     else self.spatial_output_shape)
         self.temporal_head, self.temporal_aggregation = temporal_head, temporal_aggregation
         self.temporal_steps = int(temporal_steps)
-        self.spatial_pool_type, self.norm_type = spatial_pool_type, norm
+        self.stage_pool_type, self.final_pool_type = stage_pool_type, final_pool_type
+        self.norm_type = norm
         padding, kernel = (kernel_size // 2, 0, 0), (kernel_size, 5, 5)
         first_stride = (1, int(conv1_spatial_stride), int(conv1_spatial_stride))
         self.conv1 = nn.Conv3d(3, channels[0], kernel, stride=first_stride, padding=padding)
         self.conv2 = nn.Conv3d(channels[0], channels[1], kernel, padding=padding)
         self.conv3 = nn.Conv3d(channels[1], channels[2], kernel, padding=padding)
-        self.pool1 = _pool3d(spatial_pool_type, (1, 4, 4), (1, 2, 2))
-        self.pool2 = _pool3d(spatial_pool_type, (1, 4, 4), (1, 2, 2))
-        self.pool3 = _pool3d(spatial_pool_type, (1, 4, 4), (1, 2, 2))
+        self.pool1 = _pool3d(stage_pool_type, (1, 4, 4), (1, 2, 2))
+        self.pool2 = _pool3d(stage_pool_type, (1, 4, 4), (1, 2, 2))
+        self.pool3 = _pool3d(stage_pool_type, (1, 4, 4), (1, 2, 2))
         self.norm1, self.norm2, self.norm3 = (_norm3d(norm, v) for v in channels)
         self.activation, self.last_activation_stats = build_activation(activation), []
         if temporal_head == "mean":
@@ -175,7 +179,7 @@ class Stable3DFeatureExtractor(nn.Module):
 
     def _spatial_reduce(self, values):
         target = (values.shape[2], self.spatial_output_shape[0], self.spatial_output_shape[1])
-        function = F.adaptive_avg_pool3d if self.spatial_pool_type == "avg" else F.adaptive_max_pool3d
+        function = F.adaptive_avg_pool3d if self.final_pool_type == "avg" else F.adaptive_max_pool3d
         return function(values, target)
 
     def forward(self, clips):
@@ -210,7 +214,8 @@ class MC3FeatureExtractor(nn.Module):
     """Kinetics-pretrained MC3-18 upper bound, preserving temporal steps."""
     input_mode = "clip"
 
-    def __init__(self, temporal_aggregation="gap", temporal_steps=32, pretrained=True):
+    def __init__(self, temporal_aggregation="gap", temporal_steps=32,
+                 pretrained=True, temporal_head="tcn"):
         super().__init__()
         try:
             from torchvision.models.video import MC3_18_Weights, mc3_18
@@ -223,6 +228,12 @@ class MC3FeatureExtractor(nn.Module):
             self.weights_name = "KINETICS400_V1" if pretrained else None
         self.stem, self.layer1 = backbone.stem, backbone.layer1
         self.layer2, self.layer3, self.layer4 = backbone.layer2, backbone.layer3, backbone.layer4
+        if temporal_head not in ("tcn", "none"):
+            raise ValueError("MC3 temporal_head must be 'tcn' or 'none'.")
+        self.temporal_head = temporal_head
+        if temporal_head == "tcn":
+            self.tcn = nn.Sequential(ResidualTemporalBlock(512, 1),
+                                     ResidualTemporalBlock(512, 2))
         self.aggregator = TemporalAggregator(temporal_aggregation, 512, temporal_steps)
         self.feature_dim, self.temporal_steps = 512, int(temporal_steps)
         self.temporal_aggregation = temporal_aggregation
@@ -234,6 +245,8 @@ class MC3FeatureExtractor(nn.Module):
             values = layer(values)
         values = F.adaptive_avg_pool3d(values, (self.temporal_steps, 1, 1))
         values = values.squeeze(-1).squeeze(-1).transpose(1, 2)
+        if self.temporal_head == "tcn":
+            values = self.tcn(values.transpose(1, 2)).transpose(1, 2)
         self.last_temporal_stats = {"output_std": float(values.detach().std(unbiased=False))}
         return self.aggregator(values)
 
@@ -367,11 +380,17 @@ class VideoBayesianCNN:
 
 
 def build_feature_extractor(model_config):
+    if "spatial_pool_type" in model_config or "pool_type" in model_config:
+        raise ValueError(
+            "V2 no longer accepts spatial_pool_type/pool_type; set "
+            "stage_pool_type and final_pool_type explicitly."
+        )
     architecture = model_config.get("architecture", "3d_cnn")
     if architecture == "mc3_18":
         return MC3FeatureExtractor(model_config.get("temporal_aggregation", "gap"),
                                    model_config.get("temporal_steps", 32),
-                                   model_config.get("pretrained", True))
+                                   model_config.get("pretrained", True),
+                                   model_config.get("temporal_head", "tcn"))
     if architecture not in ("3d", "3d_cnn"):
         raise ValueError("architecture must be '3d_cnn' or 'mc3_18'.")
     return Stable3DFeatureExtractor(
@@ -379,7 +398,8 @@ def build_feature_extractor(model_config):
         conv_channels=model_config.get("conv_channels", [16, 24, 32]),
         activation=model_config.get("activation", "relu"),
         spatial_output_size=model_config.get("spatial_output_size", 4),
-        spatial_pool_type=model_config.get("spatial_pool_type", "avg"),
+        stage_pool_type=model_config.get("stage_pool_type", "avg"),
+        final_pool_type=model_config.get("final_pool_type", "avg"),
         norm=model_config.get("norm", "batch"),
         temporal_head=model_config.get("temporal_head", "tcn"),
         temporal_aggregation=model_config.get("temporal_aggregation", "gap"),

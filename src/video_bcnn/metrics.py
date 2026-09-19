@@ -95,7 +95,8 @@ def detection_metrics(real_labels, anomaly_scores, threshold, target_fpr=0.05):
         return dict(
             result, auroc=math.nan, average_precision=math.nan,
             fake_average_precision=math.nan, fake_ap_lift=math.nan,
-            real_average_precision=math.nan, real_ap_lift=math.nan, eer=math.nan,
+            fake_ap_gain=math.nan, real_average_precision=math.nan,
+            real_ap_lift=math.nan, real_ap_gain=math.nan, eer=math.nan,
             target_false_positive_rate=float(target_fpr),
             tpr_at_target_fpr=math.nan,
         )
@@ -106,8 +107,10 @@ def detection_metrics(real_labels, anomaly_scores, threshold, target_fpr=0.05):
     result["average_precision"] = fake_ap  # compatibility with V1 reports
     result["fake_average_precision"] = fake_ap
     result["fake_ap_lift"] = fake_ap / max(fake_rate, 1e-12)
+    result["fake_ap_gain"] = fake_ap - fake_rate
     result["real_average_precision"] = real_ap
     result["real_ap_lift"] = real_ap / max(real_rate, 1e-12)
+    result["real_ap_gain"] = real_ap - real_rate
     fpr, tpr, _ = roc_curve(fake_labels, scores)
     result["target_false_positive_rate"] = float(target_fpr)
     result["tpr_at_target_fpr"] = float(np.interp(float(target_fpr), fpr, tpr))

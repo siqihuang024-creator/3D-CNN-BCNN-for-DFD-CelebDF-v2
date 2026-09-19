@@ -12,6 +12,10 @@ def json_safe(value):
         return {str(key): json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [json_safe(item) for item in value]
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, np.ndarray):
+        return json_safe(value.tolist())
     if isinstance(value, (np.integer,)):
         return int(value)
     if isinstance(value, (np.floating, float)):
@@ -47,7 +51,7 @@ def save_history(history, output_dir):
 
 
 def save_scores(values, output_path):
-    fields = ["dataset", "path", "method", "target_id", "donor_id", "source_clip",
+    fields = ["dataset", "path", "relative_path", "method", "target_id", "donor_id", "source_clip",
               "label_real", "anomaly_score", "predictive_mean", "predictive_std",
               "embedding_norm"]
     with open(output_path, "w", newline="", encoding="utf-8") as handle:
@@ -59,6 +63,7 @@ def save_scores(values, output_path):
                 value = values.get(key, [])
                 return value[index] if len(value) > index else default
             writer.writerow({"dataset": at("datasets"), "path": at("paths"),
+                             "relative_path": at("relative_paths"),
                              "method": at("methods"), "target_id": at("target_ids"),
                              "donor_id": at("donor_ids"), "source_clip": at("source_clips"),
                              "label_real": int(values["labels"][index]),

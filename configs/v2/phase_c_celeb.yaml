@@ -14,7 +14,9 @@ data:
   clip_length: 32
   train_clip_strides: [1, 2]
   eval_clip_stride: 2
-  selection_clips_per_video: 8
+  selection_clips_per_video: 4
+  selection_max_fakes_per_dataset: 1000
+  selection_seed: 42
   eval_clips_per_video: 8
   eval_clip_chunk_size: 4
   horizontal_flip_probability: 0.5
@@ -30,7 +32,8 @@ model:
   conv_channels: [16, 24, 32]
   temporal_kernel_size: 3
   conv1_spatial_stride: 1
-  spatial_pool_type: avg
+  stage_pool_type: avg
+  final_pool_type: avg
   spatial_output_size: 4
   temporal_head: tcn
   temporal_aggregation: gap
@@ -54,4 +57,5 @@ train:
   gradient_clip_norm: 5.0
   calibration_fpr: 0.05
   mc_samples: 30
-
+  early_stopping_patience: 8
+  selection_min_metric_improvement: 0.002
