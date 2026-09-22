@@ -60,6 +60,16 @@ class ScoreExportTests(unittest.TestCase):
             self.assertTrue((Path(directory) / "val_scores.csv").is_file())
 
 
+class FrameIndexCopyTests(unittest.TestCase):
+    def test_frame_indices_do_not_alias_the_batch_tensor(self):
+        import torch
+        from video_bcnn.evaluation import _frame_indices
+        batch = {"clip_frame_indices": torch.arange(12).reshape(1, 3, 4)}
+        values = _frame_indices(batch, 0, 3)
+        self.assertEqual(values.shape, (3, 4))
+        self.assertFalse(np.shares_memory(values, batch["clip_frame_indices"].numpy()))
+
+
 class PairedComparisonTests(unittest.TestCase):
     @staticmethod
     def table(offset=0.0):
@@ -81,11 +91,17 @@ class PairedComparisonTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             align_tables({"E0": left, "E1": right})
 
-    def test_cluster_key_falls_back_to_identity(self):
+    def test_cluster_key_defaults_to_identity(self):
         _, metadata, _ = align_tables({"E0": self.table(), "E1": self.table(0.01)})
         key, clusters = choose_clusters(metadata)
         self.assertEqual(key, "identity")
         self.assertEqual(len(clusters), 4)
+
+    def test_cluster_key_falls_back_to_source_family(self):
+        rows = [dict(row, identity="", source_family_id="f{}".format(index))
+                for index, row in enumerate(self.table().values())]
+        key, _ = choose_clusters(rows)
+        self.assertEqual(key, "source_family_id")
 
     def test_paired_cluster_bootstrap_runs(self):
         labels = np.asarray([1, 1, 0, 0])

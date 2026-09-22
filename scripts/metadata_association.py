@@ -89,11 +89,10 @@ def association(scores, values):
     if (int(mask.sum()) < 3 or len(np.unique(scores[mask])) < 2 or
             len(np.unique(values[mask])) < 2):
         return {"rho": None, "p_value": None, "n": int(mask.sum())}
-    result = spearmanr(scores[mask], values[mask])
-    # scipy 1.7 (needed by the legacy Python 3.7 environment) calls this field
-    # correlation; newer scipy also exposes statistic.
-    rho = getattr(result, "statistic", result.correlation)
-    return {"rho": float(rho), "p_value": float(result.pvalue),
+    # Unpack rather than read attributes: scipy 1.7 names the field
+    # correlation, newer scipy statistic, and both results unpack as a pair.
+    rho, p_value = spearmanr(scores[mask], values[mask])
+    return {"rho": float(rho), "p_value": float(p_value),
             "n": int(mask.sum())}
 
 

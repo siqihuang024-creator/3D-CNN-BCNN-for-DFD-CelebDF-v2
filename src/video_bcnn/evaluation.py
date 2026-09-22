@@ -32,7 +32,10 @@ def _frame_indices(batch, index, clip_count):
     values = values[index]
     if torch.is_tensor(values):
         values = values.detach().cpu().numpy()
-    values = np.asarray(values, dtype=np.int64)
+    # Copy: a view would keep every batch's storage alive for the whole split
+    # (shared memory and a file descriptor per batch with DataLoader workers).
+    # Holding the views crashed a local full evaluation after 28 T=32 videos.
+    values = np.array(values, dtype=np.int64, copy=True)
     if values.ndim != 2 or values.shape[0] != int(clip_count):
         raise ValueError("clip_frame_indices must have shape [clips, frames].")
     return values
@@ -82,7 +85,7 @@ def score_deterministic(extractor, head, loader, device, clip_chunk_size=4,
         with torch.cuda.amp.autocast(enabled=bool(use_amp and device.type == "cuda")):
             logits = head(features).float()
         result["logits"].append(float(logits.mean().cpu()))
-        result["clip_logits"].append(logits.detach().cpu().numpy())
+        result["clip_logits"].append(logits.detach().cpu().numpy().copy())
         result["clip_frame_indices"].append(
             _frame_indices(batch, 0, logits.shape[0]))
         result["labels"].append(int(batch["label"][0]))
@@ -161,8 +164,8 @@ def score_bayesian_cached(model, cached, device, mc_samples=30,
         result["means"].append(float(means.mean().cpu()))
         result["stds"].append(float(stds.mean().cpu()))
         result["scores"].append(float(-means.mean().cpu()))
-        clip_means = means.detach().cpu().numpy()
-        clip_stds = stds.detach().cpu().numpy()
+        clip_means = means.detach().cpu().numpy().copy()
+        clip_stds = stds.detach().cpu().numpy().copy()
         result["clip_means"].append(clip_means)
         result["clip_stds"].append(clip_stds)
         result["clip_scores"].append(-clip_means)

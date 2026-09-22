@@ -124,7 +124,7 @@ python scripts/compare_experiments.py `
   artifacts/v2/<E0>/reports/full_val_video_scores.csv `
   artifacts/v2/<E1>/reports/full_val_video_scores.csv `
   artifacts/v2/<E2>/reports/full_val_video_scores.csv `
-  --labels E0 E1 E2 --cluster-key source_family_id `
+  --labels E0 E1 E2 --cluster-key identity `
   --draws 2000 --output results/v2/E0_E1_E2_full_val.json
 ```
 

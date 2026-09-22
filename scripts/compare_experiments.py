@@ -1,8 +1,11 @@
 """Strict paired comparison of full-validation video score files.
 
 Every run must contain exactly the same video IDs.  Bootstrap resampling is
-paired across runs and clustered by source family (falling back to identity),
-so a family drawn twice contributes all of its videos twice to every model.
+paired across runs and clustered by identity, the plan's primary unit (falling
+back to source family), so an identity drawn twice contributes all of its
+videos twice to every model.  Identity clusters are coarser than source
+families -- one person has several source videos -- so they give the wider,
+honest interval; pass --cluster-key source_family_id for the secondary one.
 """
 
 import argparse
@@ -83,7 +86,7 @@ def align_tables(tables):
     return video_ids, metadata, scores
 
 
-def choose_clusters(rows, preferred="source_family_id", fallback="identity"):
+def choose_clusters(rows, preferred="identity", fallback="source_family_id"):
     for key in (preferred, fallback):
         values = [str(row.get(key, "")).strip() for row in rows]
         if all(values):
@@ -182,8 +185,8 @@ def main():
     parser.add_argument("score_files", nargs="+",
                         help="full_val_video_scores.csv files in comparison order")
     parser.add_argument("--labels", nargs="*", default=None)
-    parser.add_argument("--cluster-key", default="source_family_id")
-    parser.add_argument("--fallback-cluster-key", default="identity")
+    parser.add_argument("--cluster-key", default="identity")
+    parser.add_argument("--fallback-cluster-key", default="source_family_id")
     parser.add_argument("--draws", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", default="results/v2/full_val_comparison.json")
