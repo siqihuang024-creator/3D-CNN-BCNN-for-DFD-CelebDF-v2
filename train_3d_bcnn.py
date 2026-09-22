@@ -160,6 +160,9 @@ def main():
     metadata["precision"] = "fp32"
     metadata["num_train_units"] = len(train_set)
     metadata["validation_features_cached_once"] = True
+    metadata["experiment"] = args.experiment
+    metadata["validation_scope"] = "selection-validation"
+    metadata["selection_validation_videos"] = len(val_records)
     save_json(run_dir / "config.json", json_safe(config))
     save_json(run_dir / "runtime.json", metadata)
     print("Phase C on {}: {} real training videos; extractor frozen in eval mode; "
@@ -202,6 +205,8 @@ def main():
 
         values = score_bayesian_cached(model, validation_cache, device, mc_samples)
         metrics, threshold = _metrics(values, config["train"].get("calibration_fpr", 0.05))
+        metrics["evaluation_scope"] = "selection-validation"
+        metrics["num_videos"] = int(len(values["labels"]))
         diagnostics = model.diagnostics()
         diagnostics["activation_stages"] = copy.deepcopy(extractor.last_activation_stats)
         diagnostics["temporal"] = copy.deepcopy(getattr(extractor, "last_temporal_stats", {}))
@@ -233,10 +238,11 @@ def main():
             patience += 1
         save_history(history, log_dir)
         print("val AUROC={:.4f}; fake AP={:.4f} ({:.2f}x); real AP={:.4f} "
-              "({:.2f}x); sigma mean={:.3g}.".format(
+              "({:.2f}x); Macro-AP(real/fake)={:.4f}; sigma mean={:.3g}.".format(
               metrics["auroc"], metrics["fake_average_precision"],
               metrics["fake_ap_lift"], metrics["real_average_precision"],
-              metrics["real_ap_lift"], diagnostics["sigma_mean"]))
+              metrics["real_ap_lift"], metrics["macro_average_precision_real_fake"],
+              diagnostics["sigma_mean"]))
         if patience >= int(config["train"].get("early_stopping_patience", 8)):
             print("Early stopping at epoch {}; best epoch {} AUROC {:.4f}.".format(
                 epoch, best_epoch, best))

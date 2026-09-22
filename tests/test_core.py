@@ -197,6 +197,7 @@ class BatchAndMetricTests(unittest.TestCase):
         self.assertEqual(metrics["auroc"], 1.0)
         self.assertEqual(metrics["fake_average_precision"], 1.0)
         self.assertEqual(metrics["real_average_precision"], 1.0)
+        self.assertEqual(metrics["macro_average_precision_real_fake"], 1.0)
         self.assertEqual(metrics["fake_ap_lift"], 2.0)
         self.assertEqual(metrics["fake_ap_gain"], 0.5)
 

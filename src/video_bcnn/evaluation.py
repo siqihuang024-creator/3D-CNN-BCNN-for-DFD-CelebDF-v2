@@ -24,6 +24,20 @@ def _metadata(result, batch, index):
     result["source_clips"].append(source[index])
 
 
+def _frame_indices(batch, index, clip_count):
+    """Return [K,T] frame indices, or an explicit unknown sentinel."""
+    values = batch.get("clip_frame_indices")
+    if values is None:
+        return np.full((int(clip_count), 0), -1, dtype=np.int64)
+    values = values[index]
+    if torch.is_tensor(values):
+        values = values.detach().cpu().numpy()
+    values = np.asarray(values, dtype=np.int64)
+    if values.ndim != 2 or values.shape[0] != int(clip_count):
+        raise ValueError("clip_frame_indices must have shape [clips, frames].")
+    return values
+
+
 @torch.no_grad()
 def extract_clip_features(extractor, clips, device, clip_chunk_size=4, use_amp=False):
     """Extract one feature row per clip in bounded GPU chunks."""
@@ -50,7 +64,8 @@ def score_deterministic(extractor, head, loader, device, clip_chunk_size=4,
     head.eval()
     result = {key: [] for key in ("labels", "logits", "paths", "relative_paths", "datasets",
                                    "methods", "target_ids", "donor_ids",
-                                   "source_clips")}
+                                   "source_clips", "clip_logits",
+                                   "clip_frame_indices")}
     feature_sum = feature_square_sum = None
     feature_count, skipped_paths = 0, []
     for step, batch in enumerate(tqdm(loader, desc="Phase A scoring", leave=False)):
@@ -67,6 +82,9 @@ def score_deterministic(extractor, head, loader, device, clip_chunk_size=4,
         with torch.cuda.amp.autocast(enabled=bool(use_amp and device.type == "cuda")):
             logits = head(features).float()
         result["logits"].append(float(logits.mean().cpu()))
+        result["clip_logits"].append(logits.detach().cpu().numpy())
+        result["clip_frame_indices"].append(
+            _frame_indices(batch, 0, logits.shape[0]))
         result["labels"].append(int(batch["label"][0]))
         _metadata(result, batch, 0)
         video_feature = features.mean(0).double().cpu()
@@ -95,7 +113,8 @@ def cache_bayesian_loader_features(model, loader, device, clip_chunk_size=4):
     """Decode a deterministic validation split once and retain per-clip features."""
     model.feature_extractor.eval()
     result = {key: [] for key in ("labels", "paths", "relative_paths", "datasets", "methods",
-                                   "target_ids", "donor_ids", "source_clips")}
+                                   "target_ids", "donor_ids", "source_clips",
+                                   "clip_frame_indices")}
     matrices, offsets, skipped_paths, position = [], [], [], 0
     for batch in tqdm(loader, desc="Caching validation features", leave=False):
         skips, empty = _batch_skips(batch)
@@ -109,6 +128,8 @@ def cache_bayesian_loader_features(model, loader, device, clip_chunk_size=4):
         matrices.append(features)
         offsets.append((position, position + len(features)))
         position += len(features)
+        result["clip_frame_indices"].append(
+            _frame_indices(batch, 0, features.shape[0]))
         result["labels"].append(int(batch["label"][0]))
         _metadata(result, batch, 0)
     result["features"] = (torch.cat(matrices, 0) if matrices
@@ -125,7 +146,9 @@ def score_bayesian_cached(model, cached, device, mc_samples=30,
     result = {key: list(cached[key]) for key in (
         "labels", "paths", "relative_paths", "datasets", "methods", "target_ids", "donor_ids",
         "source_clips")}
-    result.update({"scores": [], "means": [], "stds": [], "embedding_norms": []})
+    result.update({"scores": [], "means": [], "stds": [], "embedding_norms": [],
+                   "clip_scores": [], "clip_means": [], "clip_stds": [],
+                   "clip_frame_indices": list(cached.get("clip_frame_indices", []))})
     video_embeddings = []
     for start, end in cached["offsets"]:
         features = cached["features"][start:end].to(device, non_blocking=True)
@@ -138,6 +161,11 @@ def score_bayesian_cached(model, cached, device, mc_samples=30,
         result["means"].append(float(means.mean().cpu()))
         result["stds"].append(float(stds.mean().cpu()))
         result["scores"].append(float(-means.mean().cpu()))
+        clip_means = means.detach().cpu().numpy()
+        clip_stds = stds.detach().cpu().numpy()
+        result["clip_means"].append(clip_means)
+        result["clip_stds"].append(clip_stds)
+        result["clip_scores"].append(-clip_means)
         video_feature = features.mean(0).cpu()
         video_embeddings.append(video_feature)
         result["embedding_norms"].append(float(video_feature.norm()))
@@ -150,6 +178,11 @@ def score_bayesian_cached(model, cached, device, mc_samples=30,
         else float("nan"))
     result["skipped_paths"] = list(cached.get("skipped_paths", []))
     result["skipped_unreadable"] = len(result["skipped_paths"])
+    if not result["clip_frame_indices"]:
+        result["clip_frame_indices"] = [
+            np.full((len(scores), 0), -1, dtype=np.int64)
+            for scores in result["clip_scores"]
+        ]
     for key in ("labels", "scores", "means", "stds", "datasets", "methods",
                 "embedding_norms", "source_clips"):
         result[key] = np.asarray(result[key])

@@ -161,6 +161,9 @@ def main():
         "lr_gamma": float(config["train"].get("lr_gamma", 0.95)),
         "clips_per_epoch": int(clips_per_epoch),
         "optimizer_steps_per_epoch": int(np.ceil(batches_per_epoch / float(accumulation))),
+        "experiment": args.experiment,
+        "validation_scope": "selection-validation",
+        "selection_validation_videos": len(val_records),
     })
     save_json(run_dir / "config.json", json_safe(config))
     save_json(run_dir / "runtime.json", metadata)
@@ -228,6 +231,8 @@ def main():
         threshold = calibrate_threshold(anomaly[labels == 1],
                                         config["train"].get("calibration_fpr", 0.05))
         metrics = detection_metrics(labels, anomaly, threshold)
+        metrics["evaluation_scope"] = "selection-validation"
+        metrics["num_videos"] = int(len(labels))
         # Dataset names follow the same order as a batch-size-one validation loader.
         per_dataset = _per_dataset(labels, anomaly, scored["datasets"], threshold)
         metrics["per_dataset"] = per_dataset
@@ -261,10 +266,11 @@ def main():
         if optimizer_updates:
             scheduler.step()
         print("val AUROC={:.4f}, fake AP={:.4f} ({:.2f}x), real AP={:.4f} "
-              "({:.2f}x), embedding-var={:.3g}".format(
+              "({:.2f}x), Macro-AP(real/fake)={:.4f}, embedding-var={:.3g}".format(
               metrics["auroc"], metrics["fake_average_precision"],
               metrics["fake_ap_lift"], metrics["real_average_precision"],
-              metrics["real_ap_lift"], metrics["embedding_variance_mean"]))
+              metrics["real_ap_lift"], metrics["macro_average_precision_real_fake"],
+              metrics["embedding_variance_mean"]))
     print("Best Phase-A epoch {} AUROC {:.4f}: {}".format(
         best_epoch, best, (checkpoint_dir / "best.pt").resolve()))
     return 0

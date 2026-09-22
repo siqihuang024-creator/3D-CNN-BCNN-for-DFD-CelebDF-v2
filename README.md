@@ -99,7 +99,36 @@ python scripts/cache_video_features.py `
 python train_3d_bcnn.py ... --feature-cache artifacts/cache/celeb_train_real_16clips.npz
 ```
 
-## 4. 最终评测
+## 4. 完整验证集与最终评测
+
+训练时的 1,134-video `selection-val` 只用于选择 `best.pt`。每个实验完成后，
+用该 checkpoint 在全部 8,205 个 CelebDFv3 validation 视频上统一评测；不要加
+`--max-videos`，也不要用 test 做结构选择：
+
+```powershell
+python evaluate_3d_bcnn.py `
+  --config configs/v2/phase_a_celeb.yaml `
+  --manifest artifacts/manifests/combined_manifest_p05.csv `
+  --checkpoint artifacts/v2/<phase-a-run>/checkpoints/best.pt `
+  --split val --bootstrap-draws 2000 --experiment E0
+```
+
+完整验证会写出 `full_val.json`、`full_val_video_scores.csv`、
+`full_val_clip_scores.csv`，同时保留兼容旧脚本的 `val_scores.csv`。正式表统一使用
+full-val 指标，AUROC 为 primary，`Macro-AP (real/fake)` 为 secondary。
+
+E0/E1/E2 都完成 full-val 后做严格配对、聚类 bootstrap 和 manipulation 分解：
+
+```powershell
+python scripts/compare_experiments.py `
+  artifacts/v2/<E0>/reports/full_val_video_scores.csv `
+  artifacts/v2/<E1>/reports/full_val_video_scores.csv `
+  artifacts/v2/<E2>/reports/full_val_video_scores.csv `
+  --labels E0 E1 E2 --cluster-key source_family_id `
+  --draws 2000 --output results/v2/E0_E1_E2_full_val.json
+```
+
+测试集仍只在最终模型确定后运行：
 
 ```powershell
 python evaluate_3d_bcnn.py `
@@ -109,15 +138,21 @@ python evaluate_3d_bcnn.py `
   --split test --bootstrap-draws 2000
 ```
 
-报告包含全量测试视频的 AUROC、真假两个方向 AP、base rate、lift/gain、balanced accuracy、EER、TPR@5%FPR，以及身份聚类主区间和 source-family 辅助区间。报告也记录请求、成功评分和损坏跳过的视频路径。
+报告包含 AUROC、真假两个方向 AP、Macro-AP (real/fake)、base rate、lift/gain、
+balanced accuracy、EER、TPR@5%FPR，以及身份与 source-family 聚类区间。逐视频和
+逐 clip 分数会同时保存，供配对比较和时间稳定性分析。
 
 容器元数据关联诊断：
 
 ```powershell
 python scripts/metadata_association.py `
-  --scores artifacts/v2/<run>/reports/test_scores.csv `
-  --video-sizes scripts/video_size_reports/video_sizes.csv --dataset CelebDFv3
+  --scores artifacts/v2/<run>/reports/full_val_video_scores.csv `
+  --video-sizes scripts/video_size_reports/video_sizes.csv `
+  --box-cache artifacts/face_cache --dataset CelebDFv3
 ```
+
+关联报告使用 Spearman rho，并分别输出 real-only、fake-only 和每种 manipulation
+内部的 rho、p-value、n；不要把跨类别的总体相关解释为模型依赖。
 
 ## 验证
 

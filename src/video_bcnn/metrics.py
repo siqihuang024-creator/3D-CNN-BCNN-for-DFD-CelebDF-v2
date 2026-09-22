@@ -96,7 +96,8 @@ def detection_metrics(real_labels, anomaly_scores, threshold, target_fpr=0.05):
             result, auroc=math.nan, average_precision=math.nan,
             fake_average_precision=math.nan, fake_ap_lift=math.nan,
             fake_ap_gain=math.nan, real_average_precision=math.nan,
-            real_ap_lift=math.nan, real_ap_gain=math.nan, eer=math.nan,
+            real_ap_lift=math.nan, real_ap_gain=math.nan,
+            macro_average_precision_real_fake=math.nan, eer=math.nan,
             target_false_positive_rate=float(target_fpr),
             tpr_at_target_fpr=math.nan,
         )
@@ -111,6 +112,11 @@ def detection_metrics(real_labels, anomaly_scores, threshold, target_fpr=0.05):
     result["real_average_precision"] = real_ap
     result["real_ap_lift"] = real_ap / max(real_rate, 1e-12)
     result["real_ap_gain"] = real_ap - real_rate
+    # Spell this out rather than relying on average="macro": in a binary
+    # problem sklearn's one-dimensional API computes AP for one positive class
+    # only.  The explicit two-direction mean is also much harder to mistake for
+    # object-detection mAP.
+    result["macro_average_precision_real_fake"] = 0.5 * (fake_ap + real_ap)
     fpr, tpr, _ = roc_curve(fake_labels, scores)
     result["target_false_positive_rate"] = float(target_fpr)
     result["tpr_at_target_fpr"] = float(np.interp(float(target_fpr), fpr, tpr))

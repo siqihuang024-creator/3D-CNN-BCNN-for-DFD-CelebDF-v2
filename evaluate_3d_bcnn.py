@@ -77,6 +77,11 @@ def main():
                         help="Balanced debug subset; omit for every final result.")
     parser.add_argument("--recalibrate-threshold", action="store_true")
     parser.add_argument("--export-embeddings", action="store_true")
+    parser.add_argument("--report-name", default=None,
+                        help="Output prefix. Defaults to full_val for a complete val run, "
+                             "test for test, and <split>_debug with --max-videos.")
+    parser.add_argument("--experiment", default=None,
+                        help="Human-readable experiment label stored with every score row.")
     args = parser.parse_args()
 
     runtime = override_dataset_roots(load_config(args.config), args.dataset_root)
@@ -115,7 +120,10 @@ def main():
         values = dict(raw)
         values.update({"scores": -raw["logits"], "means": raw["logits"],
                        "stds": np.zeros_like(raw["logits"]),
-                       "embedding_norms": np.full(len(raw["labels"]), np.nan)})
+                       "embedding_norms": np.full(len(raw["labels"]), np.nan),
+                       "clip_scores": [-np.asarray(item) for item in raw["clip_logits"]],
+                       "clip_means": [np.asarray(item) for item in raw["clip_logits"]],
+                       "clip_stds": [np.zeros_like(item) for item in raw["clip_logits"]]})
     elif stage == "phase_c":
         pyro.clear_param_store()
         extractor, model = build_model(config, device)
@@ -136,8 +144,23 @@ def main():
         threshold = calibrate_threshold(values["scores"][values["labels"] == 1],
                                         config["train"].get("calibration_fpr", 0.05))
     metrics = evaluate(values, float(threshold), args.bootstrap_draws, seed)
+    if args.report_name:
+        report_name = args.report_name
+    elif args.max_videos is not None:
+        report_name = "{}_debug".format(args.split)
+    elif args.split == "val":
+        report_name = "full_val"
+    else:
+        report_name = args.split
+    experiment = args.experiment or Path(args.checkpoint).resolve().parent.parent.name
     metrics.update({"split": args.split, "stage": stage,
                     "checkpoint": str(Path(args.checkpoint).resolve()),
+                    "experiment": experiment, "seed": seed,
+                    "evaluation_name": report_name,
+                    "evaluation_scope": ("full-validation" if args.split == "val" and
+                                         args.max_videos is None else
+                                         "debug-subset" if args.max_videos is not None else
+                                         "final-test"),
                     "threshold_source": ("evaluation_reals" if args.recalibrate_threshold
                                          else "checkpoint"),
                     "eval_batch_size": 1,
@@ -147,7 +170,8 @@ def main():
                     "skipped_videos": values.get("skipped_paths", [])})
     checkpoint_dir = Path(args.checkpoint).resolve().parent
     report_dir = checkpoint_dir.parent / "reports"
-    report = save_evaluation_report(values, metrics, report_dir, args.split)
+    report = save_evaluation_report(values, metrics, report_dir, args.split,
+                                    report_name=report_name)
     if args.export_embeddings and "embeddings" in values:
         np.savez_compressed(report_dir / "{}_embeddings.npz".format(args.split),
                             embeddings=values["embeddings"], labels=values["labels"],
@@ -155,6 +179,9 @@ def main():
     print("{} AUROC={:.4f}, identity-clustered 95% CI [{:.4f}, {:.4f}]".format(
         args.split, metrics["auroc"], metrics["identity_bootstrap"]["low"],
         metrics["identity_bootstrap"]["high"]))
+    print("AP-fake={:.4f}, AP-real={:.4f}, Macro-AP (real/fake)={:.4f}".format(
+        metrics["fake_average_precision"], metrics["real_average_precision"],
+        metrics["macro_average_precision_real_fake"]))
     print("Report: {}".format(report))
     return 0
 

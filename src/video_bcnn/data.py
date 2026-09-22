@@ -644,13 +644,14 @@ class VideoClipDataset(Dataset):
                 tensors.append(self._transform(self._crop_box(frame, box), flip))
             clips.append(torch.stack(tensors, dim=1))
             audits.append(audit)
-        return clips, audits, fps if np.isfinite(fps) and fps > 0.0 else 0.0
+        return (clips, audits, fps if np.isfinite(fps) and fps > 0.0 else 0.0,
+                clip_indices)
 
     def __getitem__(self, index):
         record = self.records[index]
         video_path = self.dataset_roots[record["dataset"]] / record["path"]
         try:
-            clips, audits, fps = self._read_clips(video_path)
+            clips, audits, fps, clip_indices = self._read_clips(video_path)
         except UnreadableVideoError as error:
             # Signal the collate function to drop this item. Every other error
             # still propagates, so real bugs are not swallowed.
@@ -667,6 +668,11 @@ class VideoClipDataset(Dataset):
             "donor_id": record.get("donor_id", ""),
             "source_clip": record.get("source_clip", ""),
             "fps": torch.tensor(fps, dtype=torch.float32),
+            # Retain exact temporal support for every evaluation clip.  This is
+            # ignored by training, but makes the exported clip_scores.csv
+            # sufficient for temporal-stability analyses without decoding the
+            # videos again.
+            "clip_frame_indices": torch.tensor(clip_indices, dtype=torch.long),
             "clip_face_any_miss": torch.tensor([item["any_miss"] for item in audits], dtype=torch.float32),
             "clip_face_miss_fraction": torch.tensor([item["miss_fraction"] for item in audits], dtype=torch.float32),
             "clip_box_center_x_jitter": torch.tensor([item["center_x_jitter"] for item in audits], dtype=torch.float32),

@@ -1,27 +1,9 @@
-"""Rank the test videos by container metadata, and ask whether the model agrees.
+"""Relate model scores to container and face-crop metadata within class strata.
 
-Two separate questions, and they must not be conflated. The first is how far the
-labels can be separated by information that never passed through the network --
-file bitrate, frame geometry, duration -- which is a property of the benchmark,
-not of the detector. The second is whether the detector's own scores move with
-that information, which is a property of the detector.
-
-The second question can only be answered as far as a rank correlation reaches: a
-Spearman coefficient near zero rules out a monotonic association and nothing
-more. A non-linear dependence, or one that runs through resolution or coding
-artefacts, would not show up here. Say "no monotonic association", never "the
-model does not use bitrate".
-
-AUROC is symmetric in direction, so a control reading 0.2174 orders the classes
-exactly as strongly as one reading 0.7826; what the tables report is the reading
-itself, and the orientation-adjusted value beside it.
-
-Usage:
-    python scripts/metadata_association.py \
-        --scores results/run_stage_a_celebdfv3_face_stageb_celeb/report_test_scores.csv \
-        --video-sizes scripts/video_size_reports/video_sizes.csv \
-        --dataset CelebDFv3 \
-        --output results/diagnostics/metadata_association_celeb_test.json
+Metadata-only AUROC diagnoses dataset shortcuts. Spearman rho, p-value and n
+are reported separately for real videos, fake videos and every manipulation;
+an all-video correlation can be induced by the label and is deliberately not
+used as evidence of model reliance.
 """
 
 import argparse
@@ -30,130 +12,161 @@ import json
 from pathlib import Path
 
 import numpy as np
+from scipy.stats import spearmanr
 from sklearn.metrics import roc_auc_score
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKSLASH = chr(92)
+DATASET_ALIASES = {"DFD-Kaggle": "DFD"}
+
+
+def _normalise_relative(relative, dataset):
+    relative = str(relative).replace(BACKSLASH, "/")
+    parts = relative.split("/")
+    if len(parts) > 1 and DATASET_ALIASES.get(parts[0], parts[0]) == dataset:
+        relative = "/".join(parts[1:])
+    return relative
 
 
 def read_video_sizes(path, dataset):
-    """(relative path) -> the scalars a container exposes without decoding."""
+    """Map manifest-relative path to visible/container scalar controls."""
     table = {}
     with open(path, "r", newline="", encoding="utf-8-sig") as handle:
         for row in csv.DictReader(handle):
-            if row.get("status") != "ok" or row["dataset"] != dataset:
+            row_dataset = DATASET_ALIASES.get(row.get("dataset"), row.get("dataset"))
+            if row.get("status") != "ok" or row_dataset != dataset:
                 continue
-            relative = row["relative_path"].replace(BACKSLASH, "/")
-            parts = relative.split("/")
-            if len(parts) > 1 and parts[0] == row["dataset"]:
-                relative = "/".join(parts[1:])
             try:
                 width, height = float(row["width"]), float(row["height"])
-                frames, duration = float(row["frame_count"]), float(row["duration_seconds"])
+                frames = float(row["frame_count"])
+                duration = float(row["duration_seconds"])
                 megabytes = float(row["file_size_mb"])
             except (KeyError, TypeError, ValueError):
                 continue
-            if width <= 0 or height <= 0 or duration <= 0 or frames <= 0:
+            if min(width, height, frames, duration) <= 0:
                 continue
-            table[relative] = {
+            table[_normalise_relative(row["relative_path"], dataset)] = {
                 "bitrate_mb_per_second": megabytes / duration,
                 "bits_per_pixel": (megabytes * 8e6) / (frames * width * height),
-                "frame_width": width,
-                "frame_height": height,
-                "frame_pixels": width * height,
-                "aspect_ratio": width / height,
+                "frame_width": width, "frame_height": height,
+                "frame_pixels": width * height, "aspect_ratio": width / height,
                 "frame_count": frames,
             }
     return table
 
 
-def spearman(a, b):
-    """Rank correlation without a scipy dependency; ties are broken by order."""
-    ranks_a = np.argsort(np.argsort(a)).astype(float)
-    ranks_b = np.argsort(np.argsort(b)).astype(float)
-    ranks_a -= ranks_a.mean()
-    ranks_b -= ranks_b.mean()
-    denominator = np.sqrt((ranks_a ** 2).sum() * (ranks_b ** 2).sum())
-    return float((ranks_a * ranks_b).sum() / denominator) if denominator else float("nan")
+def add_face_controls(table, directory, dataset):
+    """Add median face width and width/frame-width share from the cache."""
+    if not directory:
+        return
+    root = Path(directory) / dataset
+    if not root.is_dir():
+        return
+    for item in root.rglob("*.npz"):
+        relative = item.relative_to(root).as_posix()
+        if relative.endswith(".npz"):
+            relative = relative[:-4]
+        entry = table.get(relative)
+        if entry is None:
+            continue
+        try:
+            with np.load(item) as payload:
+                boxes = np.asarray(payload["boxes"])
+        except (OSError, KeyError, ValueError):
+            continue
+        if not len(boxes):
+            continue
+        box_width = float(np.median(boxes[:, 2]))
+        if np.isfinite(box_width) and box_width > 0:
+            entry["face_box_width_px"] = box_width
+            entry["face_box_share_of_frame"] = box_width / entry["frame_width"]
+
+
+def association(scores, values):
+    scores = np.asarray(scores, dtype=float)
+    values = np.asarray(values, dtype=float)
+    mask = np.isfinite(scores) & np.isfinite(values)
+    if (int(mask.sum()) < 3 or len(np.unique(scores[mask])) < 2 or
+            len(np.unique(values[mask])) < 2):
+        return {"rho": None, "p_value": None, "n": int(mask.sum())}
+    result = spearmanr(scores[mask], values[mask])
+    # scipy 1.7 (needed by the legacy Python 3.7 environment) calls this field
+    # correlation; newer scipy also exposes statistic.
+    rho = getattr(result, "statistic", result.correlation)
+    return {"rho": float(rho), "p_value": float(result.pvalue),
+            "n": int(mask.sum())}
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scores", required=True,
-                        help="A *_scores.csv written by evaluate_3d_bcnn.py.")
+                        help="A legacy *_scores.csv or new *_video_scores.csv file.")
     parser.add_argument("--video-sizes", required=True)
-    parser.add_argument("--dataset", required=True,
-                        help="Which corpus in video_sizes.csv the scores belong to.")
+    parser.add_argument("--dataset", required=True)
+    parser.add_argument("--box-cache", default=None,
+                        help="Detection-cache root; enables face_box_share_of_frame.")
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
-    sizes = read_video_sizes(args.video_sizes, args.dataset)
+    metadata = read_video_sizes(args.video_sizes, args.dataset)
+    add_face_controls(metadata, args.box_cache, args.dataset)
     with open(args.scores, "r", newline="", encoding="utf-8") as handle:
-        rows = list(csv.DictReader(handle))
+        score_rows = list(csv.DictReader(handle))
 
-    # Current reports carry the manifest-relative path explicitly.  Older
-    # reports only have the decoded absolute path, so retain that fallback.
-    scores, labels, controls, matched = [], [], {}, 0
-    for row in rows:
-        key = (row.get("relative_path") or row["path"]).replace(BACKSLASH, "/")
-        key = key.rsplit(args.dataset + "/", 1)[-1]
-        entry = sizes.get(key)
+    records = []
+    for row in score_rows:
+        relative = (row.get("relative_path") or row.get("video_path") or
+                    row.get("path") or "")
+        relative = relative.replace(BACKSLASH, "/").rsplit(args.dataset + "/", 1)[-1]
+        entry = metadata.get(relative)
         if entry is None:
             continue
-        matched += 1
-        scores.append(float(row["anomaly_score"]))
-        labels.append(int(row["label_real"]))
-        for name, value in entry.items():
-            controls.setdefault(name, []).append(value)
+        score = row.get("video_score", row.get("anomaly_score"))
+        method = row.get("forgery_method", row.get("method", ""))
+        records.append({"score": float(score), "label_real": int(row["label_real"]),
+                        "method": method, "controls": entry})
+    if len(records) < 2:
+        raise SystemExit("Only {} of {} score rows matched metadata.".format(
+            len(records), len(score_rows)))
 
-    if matched < 2:
-        raise SystemExit("Only {} of {} scored videos matched the size table; check "
-                         "--dataset and the paths.".format(matched, len(rows)))
-    scores = np.asarray(scores)
-    labels = np.asarray(labels)
+    labels = np.asarray([row["label_real"] for row in records], dtype=np.int64)
+    scores = np.asarray([row["score"] for row in records], dtype=float)
     fake = 1 - labels
+    report = {"scores": str(Path(args.scores).as_posix()), "dataset": args.dataset,
+              "videos": len(records), "real": int(labels.sum()), "fake": int(fake.sum()),
+              "model_auroc": float(roc_auc_score(fake, scores)), "controls": {}}
+    names = sorted({name for row in records for name in row["controls"]})
     print("matched {} of {} scored videos ({} real / {} fake)".format(
-        matched, len(rows), int(labels.sum()), int(fake.sum())))
+        len(records), len(score_rows), int(labels.sum()), int(fake.sum())))
+    print("model AUROC on matched subset: {:.4f}".format(report["model_auroc"]))
 
-    record = {
-        "scores": str(Path(args.scores).as_posix()),
-        "dataset": args.dataset,
-        "videos": int(matched),
-        "real": int(labels.sum()),
-        "fake": int(fake.sum()),
-        "model_auroc": float(roc_auc_score(fake, scores)),
-        "controls": {},
-    }
-    print("\nmodel AUROC on this subset: {:.4f}\n".format(record["model_auroc"]))
-    print("{:<24}{:>9}{:>12}{:>11}{:>11}{:>11}".format(
-        "control", "auroc", "orientation", "rho all", "rho real", "rho fake"))
-    for name in sorted(controls):
-        values = np.asarray(controls[name], dtype=float)
-        auroc = float(roc_auc_score(fake, values))
-        entry = {
-            "auroc": auroc,
-            "orientation_adjusted": max(auroc, 1.0 - auroc),
-            "spearman_with_score": {
-                "all": spearman(scores, values),
-                "real": spearman(scores[labels == 1], values[labels == 1]),
-                "fake": spearman(scores[labels == 0], values[labels == 0]),
-            },
+    for name in names:
+        usable = [row for row in records if name in row["controls"]]
+        control = np.asarray([row["controls"][name] for row in usable], dtype=float)
+        usable_fake = np.asarray([1 - row["label_real"] for row in usable], dtype=np.int64)
+        usable_scores = np.asarray([row["score"] for row in usable], dtype=float)
+        auroc = (float(roc_auc_score(usable_fake, control))
+                 if len(np.unique(usable_fake)) == 2 else None)
+        methods = np.asarray([row["method"] for row in usable])
+        masks = {"real_only": usable_fake == 0, "fake_only": usable_fake == 1}
+        for method in sorted(set(methods[usable_fake == 1])):
+            masks["method:{}".format(method)] = ((usable_fake == 1) & (methods == method))
+        strata = {stratum: association(usable_scores[mask], control[mask])
+                  for stratum, mask in masks.items()}
+        report["controls"][name] = {
+            "metadata_auroc": auroc,
+            "orientation_adjusted": (max(auroc, 1.0 - auroc)
+                                     if auroc is not None else None),
+            "associations": strata,
         }
-        record["controls"][name] = entry
-        print("{:<24}{:>9.4f}{:>12.4f}{:>11.4f}{:>11.4f}{:>11.4f}".format(
-            name, auroc, entry["orientation_adjusted"],
-            entry["spearman_with_score"]["all"],
-            entry["spearman_with_score"]["real"],
-            entry["spearman_with_score"]["fake"]))
 
-    destination = Path(args.output or (ROOT / "results/diagnostics"
-                                       / "metadata_association.json"))
+    destination = Path(args.output or
+                       (ROOT / "results/diagnostics/metadata_association.json"))
     destination.parent.mkdir(parents=True, exist_ok=True)
     with open(destination, "w", encoding="utf-8") as handle:
-        json.dump(record, handle, indent=2)
-    print("\nwrote {}".format(destination))
-    print("A rank correlation near zero rules out a monotonic association only.")
+        json.dump(report, handle, indent=2, allow_nan=False)
+    print("wrote {}".format(destination))
+    print("Interpret correlations as monotonic associations, not causal reliance.")
     return 0
 
 
