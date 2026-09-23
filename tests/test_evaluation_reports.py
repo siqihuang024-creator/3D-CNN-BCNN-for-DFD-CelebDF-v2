@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from scripts.compare_experiments import (align_tables, choose_clusters,
+from scripts.compare_experiments import (align_tables, alignment_diagnostics,
+                                         choose_clusters,
                                          paired_cluster_bootstrap)
 from video_bcnn.reporting import save_evaluation_report
 
@@ -90,6 +91,20 @@ class PairedComparisonTests(unittest.TestCase):
         del right["v3"]
         with self.assertRaises(ValueError):
             align_tables({"E0": left, "E1": right})
+
+    def test_intersect_compares_on_the_shared_videos(self):
+        left, right = self.table(), self.table(0.01)
+        del right["v3"]                      # a control that cannot score one video
+        with self.assertRaises(ValueError):
+            align_tables({"E0": left, "S": right})
+        video_ids, _, scores = align_tables({"E0": left, "S": right}, intersect=True)
+        self.assertEqual(video_ids, ["v0", "v1", "v2"])
+        self.assertEqual(len(scores["E0"]), 3)
+        audit = alignment_diagnostics({"E0": left, "S": right}, video_ids)
+        self.assertFalse(audit["video_ids_identical"])
+        self.assertEqual(audit["files"]["E0"]["videos_dropped"], 1)
+        self.assertEqual(audit["files"]["E0"]["fake_dropped"], 1)
+        self.assertEqual(audit["files"]["S"]["videos_dropped"], 0)
 
     def test_cluster_key_defaults_to_identity(self):
         _, metadata, _ = align_tables({"E0": self.table(), "E1": self.table(0.01)})

@@ -110,12 +110,13 @@ python evaluate_3d_bcnn.py `
   --config configs/v2/phase_a_celeb.yaml `
   --manifest artifacts/manifests/combined_manifest_p05.csv `
   --checkpoint artifacts/v2/<phase-a-run>/checkpoints/best.pt `
-  --split val --bootstrap-draws 2000 --experiment E0
+  --split val --expected-videos 8205 --bootstrap-draws 2000 --experiment E0
 ```
 
 完整验证会写出 `full_val.json`、`full_val_video_scores.csv`、
 `full_val_clip_scores.csv`，同时保留兼容旧脚本的 `val_scores.csv`。正式表统一使用
-full-val 指标，AUROC 为 primary，`Macro-AP (real/fake)` 为 secondary。
+full-val 指标，AUROC 为 primary，`Macro-AP (real/fake)` 为 secondary。若实际评分
+视频少于 manifest 请求数，正式评估会报错，不写出不完整的 full-val 报告。
 
 E0/E1/E2 都完成 full-val 后做严格配对、聚类 bootstrap 和 manipulation 分解：
 
@@ -124,9 +125,12 @@ python scripts/compare_experiments.py `
   artifacts/v2/<E0>/reports/full_val_video_scores.csv `
   artifacts/v2/<E1>/reports/full_val_video_scores.csv `
   artifacts/v2/<E2>/reports/full_val_video_scores.csv `
-  --labels E0 E1 E2 --cluster-key identity `
+  --labels E0 E1 E2 --cluster-key identity --expected-videos 8205 `
   --draws 2000 --output results/v2/E0_E1_E2_full_val.json
 ```
+
+比较报告中的 `paired_cluster_bootstrap` 是身份聚类主区间；
+`sensitivity_paired_cluster_bootstrap` 同时给出 source-family 聚类的敏感性区间。
 
 测试集仍只在最终模型确定后运行：
 
@@ -153,6 +157,29 @@ python scripts/metadata_association.py `
 
 关联报告使用 Spearman rho，并分别输出 real-only、fake-only 和每种 manipulation
 内部的 rho、p-value、n；不要把跨类别的总体相关解释为模型依赖。
+
+捷径基线应在 E2 完整验证结果导出后，使用相同视频配对比较。例如人脸框占比：
+
+```bash
+python scripts/shortcut_baseline_scores.py \
+  --manifest artifacts/manifests/combined_manifest_p05.csv \
+  --video-sizes scripts/video_size_reports/video_sizes.csv \
+  --box-cache artifacts/face_cache --dataset CelebDFv3 --split val \
+  --control face_box_share_of_frame \
+  --match artifacts/v2/celebdfv3_e2_gap_seed42/reports/full_val_video_scores.csv \
+  --output results/v2/shortcut_facebox_scores.csv
+python scripts/compare_experiments.py \
+  artifacts/v2/celebdfv3_e2_gap_seed42/reports/full_val_video_scores.csv \
+  results/v2/shortcut_facebox_scores.csv \
+  --labels E2 FaceBoxShare --intersect --draws 2000 \
+  --output results/v2/E2_vs_shortcut.json
+```
+
+捷径脚本默认要求至少 99% 的模型视频有可用元数据，并写出
+`*_provenance.json` 记录覆盖率、缺失数及分数方向。配对报告的 `alignment`
+记录每个文件因交集而丢掉的真实/伪造视频数。E0/E1/E2 的模型比较仍按
+完整相同的 video ID 严格配对，不使用 `--intersect`。方向自动校正使用了验证
+标签，因此捷径对照和相关性分析属于诊断，不作为独立测试集性能。
 
 ## 验证
 

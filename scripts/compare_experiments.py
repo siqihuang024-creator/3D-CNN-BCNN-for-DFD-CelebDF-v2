@@ -58,14 +58,28 @@ def read_score_file(path):
     return table
 
 
-def align_tables(tables):
-    """Return strict aligned metadata and scores; intersections are forbidden."""
+def align_tables(tables, intersect=False):
+    """Return aligned metadata and scores over one identical set of videos.
+
+    Differing ID sets are an error by default, because a model run that quietly
+    skipped videos would otherwise be compared on a different population. The
+    one legitimate exception is a metadata control that cannot score every
+    video, so `intersect` drops the difference and says how much it dropped.
+    """
     names = list(tables)
     reference = set(tables[names[0]])
+    if intersect:
+        shared = set.intersection(*(set(tables[name]) for name in names))
+        dropped = {name: len(set(tables[name]) - shared) for name in names}
+        if not shared:
+            raise ValueError("The score files share no video IDs.")
+        print("comparing on {} shared videos; dropped per file: {}".format(
+            len(shared), dropped))
+        reference = shared
     mismatches = {}
     for name in names[1:]:
         current = set(tables[name])
-        if current != reference:
+        if not intersect and current != reference:
             mismatches[name] = {
                 "missing": sorted(reference - current)[:10],
                 "extra": sorted(current - reference)[:10],
@@ -84,6 +98,30 @@ def align_tables(tables):
                                 for video_id in video_ids], dtype=float)
               for name in names}
     return video_ids, metadata, scores
+
+
+def alignment_diagnostics(tables, video_ids):
+    """Record how much of each original score file entered the comparison."""
+    shared = set(video_ids)
+    id_sets = {name: set(table) for name, table in tables.items()}
+    reference = next(iter(id_sets.values()))
+    files = {}
+    for name, table in tables.items():
+        dropped = id_sets[name] - shared
+        files[name] = {
+            "videos_original": len(table),
+            "videos_dropped": len(dropped),
+            "real_dropped": sum(table[video_id]["label_real"] == 1
+                                for video_id in dropped),
+            "fake_dropped": sum(table[video_id]["label_real"] == 0
+                                for video_id in dropped),
+            "dropped_video_ids_sample": sorted(dropped)[:10],
+        }
+    return {
+        "video_ids_identical": all(ids == reference for ids in id_sets.values()),
+        "videos_compared": len(shared),
+        "files": files,
+    }
 
 
 def choose_clusters(rows, preferred="identity", fallback="source_family_id"):
@@ -187,8 +225,19 @@ def main():
     parser.add_argument("--labels", nargs="*", default=None)
     parser.add_argument("--cluster-key", default="identity")
     parser.add_argument("--fallback-cluster-key", default="source_family_id")
+    parser.add_argument("--sensitivity-cluster-key", default=None,
+                        help="Second paired bootstrap clustering. Defaults to "
+                             "source_family_id when identity is primary, or "
+                             "identity otherwise.")
     parser.add_argument("--draws", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--expected-videos", type=int, default=None,
+                        help="Require this many shared scored videos (e.g. 8205 for "
+                             "CelebDFv3 full validation).")
+    parser.add_argument("--intersect", action="store_true",
+                        help="Compare on the shared videos instead of requiring "
+                             "identical ID sets. For a metadata control that "
+                             "cannot score every video, not for model runs.")
     parser.add_argument("--output", default="results/v2/full_val_comparison.json")
     args = parser.parse_args()
     labels = args.labels or [Path(path).parent.parent.name for path in args.score_files]
@@ -198,10 +247,23 @@ def main():
         parser.error("Comparison labels must be unique.")
 
     tables = {name: read_score_file(path) for name, path in zip(labels, args.score_files)}
-    video_ids, metadata, scores = align_tables(tables)
+    video_ids, metadata, scores = align_tables(tables, args.intersect)
+    if args.expected_videos is not None and len(video_ids) != args.expected_videos:
+        raise ValueError("Expected {} paired videos, found {}.".format(
+            args.expected_videos, len(video_ids)))
+    alignment = alignment_diagnostics(tables, video_ids)
     label_real = np.asarray([row["label_real"] for row in metadata], dtype=np.int64)
     cluster_key, clusters = choose_clusters(
         metadata, args.cluster_key, args.fallback_cluster_key)
+    sensitivity_key = (args.sensitivity_cluster_key or
+                       ("source_family_id" if cluster_key == "identity" else "identity"))
+    sensitivity_values = [str(row.get(sensitivity_key, "")).strip()
+                          for row in metadata]
+    if all(sensitivity_values) and sensitivity_key != cluster_key:
+        sensitivity_report = paired_cluster_bootstrap(
+            label_real, scores, np.asarray(sensitivity_values), args.draws, args.seed)
+    else:
+        sensitivity_report = None
     point = {name: ranking_metrics(label_real, values) for name, values in scores.items()}
     ordered = list(scores)
     point_deltas = {}
@@ -213,8 +275,15 @@ def main():
             }
     report = {
         "score_files": dict(zip(labels, args.score_files)),
-        "videos": len(video_ids), "video_ids_identical": True,
+        "videos": len(video_ids),
+        "video_ids_identical": alignment["video_ids_identical"],
+        "compared_on": ("shared subset" if not alignment["video_ids_identical"]
+                        else "identical id sets"),
+        "alignment": alignment,
         "cluster_key": cluster_key,
+        "sensitivity_cluster_key": (sensitivity_key if sensitivity_report is not None
+                                    else None),
+        "sensitivity_paired_cluster_bootstrap": sensitivity_report,
         "metrics": point,
         "point_deltas": point_deltas,
         "paired_cluster_bootstrap": paired_cluster_bootstrap(
@@ -236,9 +305,12 @@ def main():
             writer.writerows(method_rows)
     print(json.dumps(json_safe({"videos": report["videos"],
                                 "cluster_key": cluster_key,
+                                "sensitivity_cluster_key": report["sensitivity_cluster_key"],
                                 "metrics": point,
                                 "point_deltas": point_deltas,
-                                "deltas": report["paired_cluster_bootstrap"]["deltas"]}),
+                                "deltas": report["paired_cluster_bootstrap"]["deltas"],
+                                "sensitivity_deltas": (sensitivity_report["deltas"]
+                                                       if sensitivity_report else None)}),
                      indent=2))
     print("wrote {} and {}".format(destination, method_path))
     return 0

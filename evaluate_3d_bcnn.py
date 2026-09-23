@@ -75,6 +75,8 @@ def main():
     parser.add_argument("--bootstrap-draws", type=int, default=2000)
     parser.add_argument("--max-videos", type=int, default=None,
                         help="Balanced debug subset; omit for every final result.")
+    parser.add_argument("--expected-videos", type=int, default=None,
+                        help="Require this many manifest videos for the requested split.")
     parser.add_argument("--recalibrate-threshold", action="store_true")
     parser.add_argument("--export-embeddings", action="store_true")
     parser.add_argument("--report-name", default=None,
@@ -98,6 +100,9 @@ def main():
         half = max(1, int(args.max_videos) // 2)
         records = ([row for row in records if int(row["label"]) == 1][:half] +
                    [row for row in records if int(row["label"]) == 0][:half])
+    if args.expected_videos is not None and len(records) != args.expected_videos:
+        raise ValueError("Expected {} {} videos in manifest, found {}.".format(
+            args.expected_videos, args.split, len(records)))
     preflight_face_cache(records, config)
     dataset = make_dataset(records, config, training=False,
                            clips_per_video=config["data"].get("eval_clips_per_video", 8))
@@ -138,6 +143,12 @@ def main():
             collect_embeddings=args.export_embeddings)
     else:
         raise ValueError("Unknown checkpoint stage {!r}.".format(stage))
+
+    if args.max_videos is None and len(values["labels"]) != len(records):
+        raise RuntimeError(
+            "Incomplete {} evaluation: requested {} videos, scored {}; "
+            "skipped paths: {}".format(args.split, len(records), len(values["labels"]),
+                                      values.get("skipped_paths", [])[:10]))
 
     threshold = checkpoint.get("threshold")
     if args.recalibrate_threshold or threshold is None:
