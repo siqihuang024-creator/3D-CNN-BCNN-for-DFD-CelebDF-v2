@@ -1,0 +1,151 @@
+{
+  "_note": "Frozen 2026-09-23 from the CelebDFv3 full validation split, using face_box_share_of_frame alone as the ranker (results/v2/shortcut_facebox_scores.csv). The groups are a property of the benchmark, measured without any model. Fixed here so later runs cannot redraw the diagnostic subset around their own results; re-derive only if the manifest or the face-box cache changes.",
+  "control": "face_box_share_of_frame",
+  "dataset": "CelebDFv3",
+  "groups_by_name": {
+    "intermediate": [],
+    "neutral": [
+      "FaceReenact/LivePortrait",
+      "FaceSwap/BlendFace",
+      "FaceSwap/Celeb-DF-v2",
+      "FaceSwap/GHOST",
+      "FaceSwap/HifiFace",
+      "FaceSwap/InSwapper",
+      "FaceSwap/MobileFaceSwap",
+      "FaceSwap/SimSwap",
+      "FaceSwap/UniFace"
+    ],
+    "separable": [
+      "FaceReenact/DaGAN",
+      "FaceReenact/FSRT",
+      "FaceReenact/HyperReenact",
+      "FaceReenact/LIA",
+      "FaceReenact/MCNET",
+      "FaceReenact/TPSMM",
+      "TalkingFace/AniTalker",
+      "TalkingFace/EDTalk",
+      "TalkingFace/EchoMimic",
+      "TalkingFace/FLOAT",
+      "TalkingFace/IP_LAP",
+      "TalkingFace/Real3DPortrait",
+      "TalkingFace/SadTalker"
+    ]
+  },
+  "methods": {
+    "FaceReenact/DaGAN": {
+      "control_auroc": 0.9999490601599511,
+      "group": "separable",
+      "n_fake": 293
+    },
+    "FaceReenact/FSRT": {
+      "control_auroc": 0.9999745300799755,
+      "group": "separable",
+      "n_fake": 293
+    },
+    "FaceReenact/HyperReenact": {
+      "control_auroc": 1.0,
+      "group": "separable",
+      "n_fake": 293
+    },
+    "FaceReenact/LIA": {
+      "control_auroc": 0.9999745300799755,
+      "group": "separable",
+      "n_fake": 293
+    },
+    "FaceReenact/LivePortrait": {
+      "control_auroc": 0.5041388620039733,
+      "group": "neutral",
+      "n_fake": 293
+    },
+    "FaceReenact/MCNET": {
+      "control_auroc": 0.999949060159951,
+      "group": "separable",
+      "n_fake": 293
+    },
+    "FaceReenact/TPSMM": {
+      "control_auroc": 0.9999490601599511,
+      "group": "separable",
+      "n_fake": 293
+    },
+    "FaceSwap/BlendFace": {
+      "control_auroc": 0.4816998624624319,
+      "group": "neutral",
+      "n_fake": 293
+    },
+    "FaceSwap/Celeb-DF-v2": {
+      "control_auroc": 0.5146083308945469,
+      "group": "neutral",
+      "n_fake": 918
+    },
+    "FaceSwap/GHOST": {
+      "control_auroc": 0.47809586877897203,
+      "group": "neutral",
+      "n_fake": 293
+    },
+    "FaceSwap/HifiFace": {
+      "control_auroc": 0.47942030462024354,
+      "group": "neutral",
+      "n_fake": 293
+    },
+    "FaceSwap/InSwapper": {
+      "control_auroc": 0.48498548214558607,
+      "group": "neutral",
+      "n_fake": 293
+    },
+    "FaceSwap/MobileFaceSwap": {
+      "control_auroc": 0.476121949977077,
+      "group": "neutral",
+      "n_fake": 293
+    },
+    "FaceSwap/SimSwap": {
+      "control_auroc": 0.4918878304722123,
+      "group": "neutral",
+      "n_fake": 293
+    },
+    "FaceSwap/UniFace": {
+      "control_auroc": 0.48006978758086694,
+      "group": "neutral",
+      "n_fake": 293
+    },
+    "TalkingFace/AniTalker": {
+      "control_auroc": 1.0,
+      "group": "separable",
+      "n_fake": 445
+    },
+    "TalkingFace/EDTalk": {
+      "control_auroc": 1.0,
+      "group": "separable",
+      "n_fake": 435
+    },
+    "TalkingFace/EchoMimic": {
+      "control_auroc": 1.0,
+      "group": "separable",
+      "n_fake": 420
+    },
+    "TalkingFace/FLOAT": {
+      "control_auroc": 1.0,
+      "group": "separable",
+      "n_fake": 445
+    },
+    "TalkingFace/IP_LAP": {
+      "control_auroc": 1.0,
+      "group": "separable",
+      "n_fake": 440
+    },
+    "TalkingFace/Real3DPortrait": {
+      "control_auroc": 1.0,
+      "group": "separable",
+      "n_fake": 416
+    },
+    "TalkingFace/SadTalker": {
+      "control_auroc": 1.0,
+      "group": "separable",
+      "n_fake": 440
+    }
+  },
+  "split": "val",
+  "split_rule": {
+    "neutral_band": 0.05,
+    "separable_threshold": 0.95
+  }
+}

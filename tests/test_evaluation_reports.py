@@ -71,6 +71,36 @@ class FrameIndexCopyTests(unittest.TestCase):
         self.assertFalse(np.shares_memory(values, batch["clip_frame_indices"].numpy()))
 
 
+class ShortcutSplitTests(unittest.TestCase):
+    def test_methods_split_by_what_the_control_alone_achieves(self):
+        from scripts.shortcut_split_report import control_by_method
+        table = {}
+        # The control ranks "solved" fakes above every real and "neutral" fakes
+        # interleaved with them.
+        for index in range(4):
+            table["r%d" % index] = {"label_real": 1, "video_score": 0.5 + index,
+                                    "forgery_method": "real"}
+        for index in range(4):
+            table["s%d" % index] = {"label_real": 0, "video_score": 100.0 + index,
+                                    "forgery_method": "solved"}
+            table["n%d" % index] = {"label_real": 0, "video_score": 0.5 + index,
+                                    "forgery_method": "neutral"}
+        groups, per_method = control_by_method(table, 0.05, 0.95)
+        self.assertEqual(groups["separable"], ["solved"])
+        self.assertEqual(groups["neutral"], ["neutral"])
+        self.assertEqual(per_method["solved"]["control_auroc"], 1.0)
+
+    def test_frozen_groups_must_cover_each_method_exactly_once(self):
+        from scripts.shortcut_split_report import validate_groups
+        valid = {"neutral": ["a"], "separable": ["b"], "intermediate": []}
+        validate_groups(valid, {"a", "b"})
+        with self.assertRaisesRegex(ValueError, "missing"):
+            validate_groups(valid, {"a", "b", "c"})
+        with self.assertRaisesRegex(ValueError, "multiple"):
+            validate_groups({"neutral": ["a"], "separable": ["a"],
+                             "intermediate": []}, {"a"})
+
+
 class PairedComparisonTests(unittest.TestCase):
     @staticmethod
     def table(offset=0.0):

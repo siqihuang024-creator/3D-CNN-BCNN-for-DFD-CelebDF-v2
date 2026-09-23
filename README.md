@@ -175,6 +175,22 @@ python scripts/compare_experiments.py \
   --output results/v2/E2_vs_shortcut.json
 ```
 
+CelebDF++ 的 22 种伪造方法里，有 13 种的人脸框占比单变量 AUROC 接近 1，
+另 9 种该指标接近随机水平。这仅针对该单变量，不能排除其他捷径。
+分组已冻结在 `configs/v2/shortcut_split_celeb_val.json`
+（2026-09-23 由完整验证集的标签和人脸框占比分数导出，不使用模型分数），后续实验一律复用，
+不再按新结果重新划分：
+
+```bash
+python scripts/shortcut_split_report.py \
+  artifacts/v2/<E2>/reports/full_val_video_scores.csv \
+  artifacts/v2/<E3>/reports/full_val_video_scores.csv \
+  --labels E2 E3 --frozen-split configs/v2/shortcut_split_celeb_val.json \
+  --draws 2000 --output results/v2/E2_E3_shortcut_split.json
+```
+
+该子集是事后定义、诊断用的敏感性分析，不是新的独立测试集；正式主指标仍是完整验证集上的 AUROC。
+
 捷径脚本默认要求至少 99% 的模型视频有可用元数据，并写出
 `*_provenance.json` 记录覆盖率、缺失数及分数方向。配对报告的 `alignment`
 记录每个文件因交集而丢掉的真实/伪造视频数。E0/E1/E2 的模型比较仍按
