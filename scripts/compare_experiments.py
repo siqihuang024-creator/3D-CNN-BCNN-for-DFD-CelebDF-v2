@@ -16,7 +16,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.metrics import average_precision_score, roc_auc_score, roc_curve
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -133,17 +133,32 @@ def choose_clusters(rows, preferred="identity", fallback="source_family_id"):
         preferred, fallback))
 
 
+# Operating points worth an interval. 5% of 134 real videos is under seven
+# false positives, so that point moves by three quarters of a percent per video
+# and needs its interval printed beside it; 10% doubles the real videos the
+# threshold rests on. 1% would rest on one video and is not reported.
+TARGET_FPRS = (0.05, 0.10)
+BOOTSTRAP_METRICS = ("auroc", "macro_ap_real_fake",
+                     "tpr_at_5pct_fpr", "tpr_at_10pct_fpr")
+
+
 def ranking_metrics(label_real, scores):
     label_real = np.asarray(label_real, dtype=np.int64)
     fake = 1 - label_real
+    names = ["auroc", "ap_fake", "ap_real", "macro_ap_real_fake"]
+    names += ["tpr_at_{:g}pct_fpr".format(100 * rate) for rate in TARGET_FPRS]
     if np.unique(fake).size < 2:
-        return {"auroc": float("nan"), "ap_fake": float("nan"),
-                "ap_real": float("nan"), "macro_ap_real_fake": float("nan")}
+        return {name: float("nan") for name in names}
     ap_fake = float(average_precision_score(fake, scores))
     ap_real = float(average_precision_score(label_real, -np.asarray(scores)))
-    return {"auroc": float(roc_auc_score(fake, scores)),
-            "ap_fake": ap_fake, "ap_real": ap_real,
-            "macro_ap_real_fake": 0.5 * (ap_fake + ap_real)}
+    result = {"auroc": float(roc_auc_score(fake, scores)),
+              "ap_fake": ap_fake, "ap_real": ap_real,
+              "macro_ap_real_fake": 0.5 * (ap_fake + ap_real)}
+    false_positive, true_positive, _ = roc_curve(fake, scores)
+    for rate in TARGET_FPRS:
+        result["tpr_at_{:g}pct_fpr".format(100 * rate)] = float(
+            np.interp(rate, false_positive, true_positive))
+    return result
 
 
 def paired_cluster_bootstrap(label_real, scores, clusters, draws=2000, seed=42):
@@ -154,11 +169,11 @@ def paired_cluster_bootstrap(label_real, scores, clusters, draws=2000, seed=42):
     if not members:
         raise ValueError("No bootstrap clusters.")
     rng = np.random.default_rng(seed)
-    samples = {name: {"auroc": [], "macro_ap_real_fake": []} for name in scores}
+    samples = {name: {metric: [] for metric in BOOTSTRAP_METRICS} for name in scores}
     pairs = [(left, right) for index, left in enumerate(scores)
              for right in list(scores)[index + 1:]]
     deltas = {"{}-{}".format(right, left):
-              {"auroc": [], "macro_ap_real_fake": []}
+              {metric: [] for metric in BOOTSTRAP_METRICS}
               for left, right in pairs}
     valid = 0
     for _ in range(int(draws)):
@@ -271,7 +286,7 @@ def main():
         for right in ordered[left_index + 1:]:
             point_deltas["{}-{}".format(right, left)] = {
                 metric: point[right][metric] - point[left][metric]
-                for metric in ("auroc", "macro_ap_real_fake")
+                for metric in BOOTSTRAP_METRICS
             }
     report = {
         "score_files": dict(zip(labels, args.score_files)),

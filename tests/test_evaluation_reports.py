@@ -148,6 +148,27 @@ class PairedComparisonTests(unittest.TestCase):
         key, _ = choose_clusters(rows)
         self.assertEqual(key, "source_family_id")
 
+    def test_operating_points_are_reported_and_bootstrapped(self):
+        from scripts.compare_experiments import ranking_metrics, BOOTSTRAP_METRICS
+        # Twenty reals, twenty fakes, and a score that ranks every fake above
+        # every real: both operating points must read 1.0.
+        labels = np.asarray([1] * 20 + [0] * 20)
+        scores = np.concatenate([np.linspace(0.0, 0.4, 20), np.linspace(0.6, 1.0, 20)])
+        perfect = ranking_metrics(labels, scores)
+        self.assertEqual(perfect["tpr_at_5pct_fpr"], 1.0)
+        self.assertEqual(perfect["tpr_at_10pct_fpr"], 1.0)
+        # A score carrying no information sits near the false-positive rate.
+        uninformative = ranking_metrics(labels, np.tile(np.linspace(0, 1, 20), 2))
+        self.assertLess(uninformative["tpr_at_5pct_fpr"], 0.2)
+        self.assertLessEqual(uninformative["tpr_at_5pct_fpr"],
+                             uninformative["tpr_at_10pct_fpr"])
+        report = paired_cluster_bootstrap(
+            labels, {"A": scores, "B": scores + 0.01},
+            np.asarray(["c{}".format(index % 5) for index in range(40)]),
+            draws=20, seed=42)
+        for metric in BOOTSTRAP_METRICS:
+            self.assertIn(metric, report["deltas"]["B-A"])
+
     def test_paired_cluster_bootstrap_runs(self):
         labels = np.asarray([1, 1, 0, 0])
         scores = {"E0": np.asarray([0.3, 0.4, 0.6, 0.7]),

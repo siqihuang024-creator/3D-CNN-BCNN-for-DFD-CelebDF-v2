@@ -36,10 +36,21 @@ def recommend_final_pool(trained_delta, random_deltas):
 
 
 def best_probe(features, labels, identities, seed):
+    """Best out-of-fold AUROC over the ridge grid, and the whole curve beside it.
+
+    The headline is a maximum over five ridge strengths scored on the same
+    folds, so it is optimistic, and unevenly so: a 15,488-dimensional candidate
+    is far more sensitive to the penalty than a 512-dimensional one when only a
+    few hundred videos are available. Comparing pooling sizes on the maximum
+    alone would read that difference as information content, so the per-strength
+    curve is reported too and belongs in any such comparison.
+    """
     results, identity_count = probe(features, labels, identities, folds=5, seed=seed)
     if not results:
-        return float("nan"), identity_count
-    return max(item["out_of_fold"] for item in results.values()), identity_count
+        return float("nan"), identity_count, {}
+    curve = {str(strength): float(item["out_of_fold"])
+             for strength, item in sorted(results.items())}
+    return max(item["out_of_fold"] for item in results.values()), identity_count, curve
 
 
 def candidate_config(config, final_pool, size):
@@ -72,15 +83,23 @@ def main():
     parser.add_argument("--output", default="artifacts/v2/pool_screen_dfd.json")
     args = parser.parse_args()
     runtime = override_dataset_roots(load_config(args.config), args.dataset_root)
-    if runtime["data"].get("active_datasets") != ["DFD"]:
-        raise ValueError("Screen S is defined for DFD only.")
+    # Screen S was written for DFD, where whole frames made the final pool the
+    # open question. The same measurement answers a different question on
+    # CelebDF++: holding one trained extractor fixed, how much of what a linear
+    # probe could read at 22x22 survives 4x4? Re-pooling costs no training, so
+    # the screen is the cheap way to separate "the bottleneck destroys the
+    # signal" from "the smaller model simply learned a little less".
+    active = runtime["data"].get("active_datasets") or []
+    if len(active) != 1:
+        raise ValueError("Screen S needs exactly one active dataset, found {}."
+                         .format(active))
     device = resolve_device(runtime.get("device", "cuda"))
     seed = int(runtime.get("seed", 42))
     seed_everything(seed)
     saved = load_checkpoint(args.checkpoint, device)
     config = copy.deepcopy(saved["config"])
     config["data"]["dataset_roots"] = runtime["data"]["dataset_roots"]
-    config["data"]["active_datasets"] = ["DFD"]
+    config["data"]["active_datasets"] = list(active)
     rows = select_records(active_records(load_manifest(args.manifest), config), args.split)
     reals = spread_by_identity([row for row in rows if int(row["label"]) == 1],
                                sum(int(row["label"]) == 1 for row in rows), seed)
@@ -91,15 +110,23 @@ def main():
     trained_state = saved["extractor"]
     report = {"checkpoint": str(Path(args.checkpoint).resolve()), "split": args.split,
               "videos": len(rows), "real": len(reals), "fake": len(fakes),
+              "clips_per_video": 4,
+              "scope": ("Exploratory diagnostic: a balanced identity-spread subset "
+                        "at 4 clips per video, scored by frozen-feature linear "
+                        "probes. These numbers are not comparable with the "
+                        "full-validation AUROC of a retrained model, and the "
+                        "recommendation below covers avg vs max at one size, not "
+                        "which pooling size to train with."),
               "trained": {}, "random": {}, "criterion": {}}
     trained_scores = {}
     for name, final_pool, size in CANDIDATES:
         current = candidate_config(config, final_pool, size)
         features, labels, identities = extract_candidate(
             current, rows, trained_state, device)
-        value, identity_count = best_probe(features, labels, identities, seed)
+        value, identity_count, curve = best_probe(features, labels, identities, seed)
         trained_scores[name] = value
         report["trained"][name] = {"held_out_probe_auroc": value,
+                                    "probe_auroc_by_ridge": curve,
                                     "feature_dim": int(features.shape[1]),
                                     "identities": identity_count}
     if min(item["identities"] for item in report["trained"].values()) < 10:
@@ -117,7 +144,7 @@ def main():
             current = candidate_config(config, final_pool, size)
             features, labels, identities = extract_candidate(
                 current, rows, random_state, device)
-            draw_scores[name], _ = best_probe(features, labels, identities, seed + draw)
+            draw_scores[name], _, _ = best_probe(features, labels, identities, seed + draw)
         delta = draw_scores["max4x4"] - draw_scores["avg4x4"]
         deltas.append(delta)
         report["random"][str(draw + 1)] = {"probes": draw_scores,
