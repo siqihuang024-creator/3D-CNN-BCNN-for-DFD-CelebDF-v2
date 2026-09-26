@@ -2,11 +2,13 @@
 
 import argparse
 import copy
+import hashlib
 import sys
 from pathlib import Path
 
 import numpy as np
 import pyro
+import torch
 from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parent
@@ -23,6 +25,49 @@ from video_bcnn.reporting import save_evaluation_report
 from video_bcnn.utils import (load_checkpoint, load_config, override_dataset_roots,
                               override_num_workers, resolve_device, seed_everything)
 from train_3d_bcnn import build_model
+
+
+class ShuffledFrameLoader:
+    """Yield the same clips with their frames permuted in time.
+
+    This perturbs the whole model, including the trunk's temporal convolutions;
+    it cannot isolate the TCN. Small drops do not prove order independence.
+    Orders are bound to video/clip IDs, independent of loader traversal.
+    """
+
+    def __init__(self, loader, seed):
+        self.loader, self.seed = loader, int(seed)
+
+    def __len__(self):
+        return len(self.loader)
+
+    def __iter__(self):
+        for batch in self.loader:
+            if batch is None or batch.get("_skip_only", False):
+                yield batch
+                continue
+            batch = dict(batch)
+            clips = batch["clips"].clone()
+            frame_indices = batch.get("clip_frame_indices")
+            if frame_indices is not None:
+                frame_indices = frame_indices.clone()
+            steps = clips.shape[3]
+            for video in range(clips.shape[0]):
+                for clip in range(clips.shape[1]):
+                    paths = batch.get("relative_path", batch.get("path", [str(video)]))
+                    datasets = batch.get("dataset", [""] * clips.shape[0])
+                    key = "{}|{}::{}|{}".format(self.seed, datasets[video],
+                        str(paths[video]).replace("\\", "/"), clip).encode("utf-8")
+                    value = int.from_bytes(hashlib.sha256(key).digest()[:8], "little") % (2 ** 63)
+                    generator = torch.Generator().manual_seed(value)
+                    order = torch.randperm(steps, generator=generator)
+                    clips[video, clip] = clips[video, clip][:, order]
+                    if frame_indices is not None:
+                        frame_indices[video, clip] = frame_indices[video, clip][order]
+            batch["clips"] = clips
+            if frame_indices is not None:
+                batch["clip_frame_indices"] = frame_indices
+            yield batch
 
 
 def evaluate(values, threshold, draws, seed):
@@ -84,7 +129,18 @@ def main():
                              "test for test, and <split>_debug with --max-videos.")
     parser.add_argument("--experiment", default=None,
                         help="Human-readable experiment label stored with every score row.")
+    parser.add_argument("--shuffle-sequence", action="store_true",
+                        help="Order control for the temporal head only: permute the "
+                             "per-frame feature sequence between the trunk and the TCN, "
+                             "leaving each frame feature untouched. TCN checkpoints only.")
+    parser.add_argument("--shuffle-frames", action="store_true",
+                        help="Whole-model order diagnostic: permute raw frames per clip. "
+                             "Writes a separate report; not a TCN-only intervention.")
     args = parser.parse_args()
+    if args.shuffle_frames and args.shuffle_sequence:
+        parser.error("Use only one shuffle intervention per evaluation.")
+    if (args.shuffle_frames or args.shuffle_sequence) and args.report_name in ("full_val", "test", "val"):
+        parser.error("A shuffle control cannot overwrite the ordered report name.")
 
     runtime = override_dataset_roots(load_config(args.config), args.dataset_root)
     override_num_workers(runtime, args.num_workers)
@@ -110,8 +166,12 @@ def main():
                         num_workers=int(config["data"].get("num_workers", 0)),
                         pin_memory=device.type == "cuda", worker_init_fn=seed_worker,
                         collate_fn=skip_unreadable_collate)
+    if args.shuffle_frames:
+        loader = ShuffledFrameLoader(loader, seed)
 
     stage = checkpoint.get("stage", "phase_c")
+    if args.shuffle_sequence and stage != "phase_a":
+        raise ValueError("Sequence shuffling is only supported for Phase-A TCN checkpoints.")
     if stage == "phase_a":
         extractor = build_feature_extractor(config["model"]).to(device)
         extractor.load_state_dict(checkpoint["extractor"])
@@ -119,6 +179,8 @@ def main():
                                  config["model"].get("deterministic_hidden_dim", 0),
                                  config["model"].get("dropout", 0.2)).to(device)
         head.load_state_dict(checkpoint["head"])
+        if args.shuffle_sequence:
+            extractor.set_sequence_shuffle(seed)
         raw = score_deterministic(
             extractor, head, loader, device,
             int(config["data"].get("eval_clip_chunk_size", 4)), use_amp=True)
@@ -150,6 +212,9 @@ def main():
             "skipped paths: {}".format(args.split, len(records), len(values["labels"]),
                                       values.get("skipped_paths", [])[:10]))
 
+    if args.expected_videos is not None and len(values["labels"]) != args.expected_videos:
+        raise RuntimeError("Scored {} of {} videos; refusing a partial evaluation.".format(
+            len(values["labels"]), args.expected_videos))
     threshold = checkpoint.get("threshold")
     if args.recalibrate_threshold or threshold is None:
         threshold = calibrate_threshold(values["scores"][values["labels"] == 1],
@@ -163,6 +228,12 @@ def main():
         report_name = "full_val"
     else:
         report_name = args.split
+    if not args.report_name:
+        # Never overwrite the ordered report: the pair is the measurement.
+        if args.shuffle_frames:
+            report_name = "{}_shuffled".format(report_name)
+        if args.shuffle_sequence:
+            report_name = "{}_seqshuffled".format(report_name)
     experiment = args.experiment or Path(args.checkpoint).resolve().parent.parent.name
     metrics.update({"split": args.split, "stage": stage,
                     "checkpoint": str(Path(args.checkpoint).resolve()),
@@ -172,6 +243,9 @@ def main():
                                          args.max_videos is None else
                                          "debug-subset" if args.max_videos is not None else
                                          "final-test"),
+                    "frame_order": ("frames-shuffled" if args.shuffle_frames else
+                                    "sequence-shuffled" if args.shuffle_sequence else
+                                    "natural"),
                     "threshold_source": ("evaluation_reals" if args.recalibrate_threshold
                                          else "checkpoint"),
                     "eval_batch_size": 1,
@@ -182,7 +256,8 @@ def main():
     checkpoint_dir = Path(args.checkpoint).resolve().parent
     report_dir = checkpoint_dir.parent / "reports"
     report = save_evaluation_report(values, metrics, report_dir, args.split,
-                                    report_name=report_name)
+                                    report_name=report_name,
+                                    write_legacy=not (args.shuffle_frames or args.shuffle_sequence))
     if args.export_embeddings and "embeddings" in values:
         np.savez_compressed(report_dir / "{}_embeddings.npz".format(args.split),
                             embeddings=values["embeddings"], labels=values["labels"],

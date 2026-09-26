@@ -172,7 +172,8 @@ def save_scores(values, output_path):
                              "embedding_norm": _at(values, "embedding_norms", index)})
 
 
-def save_evaluation_report(values, metrics, output_dir, split, report_name=None):
+def save_evaluation_report(values, metrics, output_dir, split, report_name=None,
+                           write_legacy=True):
     output_dir = ensure_dir(output_dir)
     report_name = str(report_name or split)
     path = output_dir / "{}.json".format(report_name)
@@ -184,5 +185,6 @@ def save_evaluation_report(values, metrics, output_dir, split, report_name=None)
     save_clip_scores(values, output_dir / "{}_clip_scores.csv".format(report_name),
                      context)
     # Keep the legacy filename for select_aggregator.py and existing reports.
-    save_scores(values, output_dir / "{}_scores.csv".format(split))
+    if write_legacy:
+        save_scores(values, output_dir / "{}_scores.csv".format(split))
     return path

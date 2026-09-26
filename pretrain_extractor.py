@@ -2,6 +2,7 @@
 
 import argparse
 import copy
+import re
 import sys
 import time
 from pathlib import Path
@@ -51,6 +52,10 @@ def main():
     parser.add_argument("--config", required=True)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--run-dir", default=None)
+    parser.add_argument("--max-epochs", type=int, default=None,
+                        help="Total epochs of a NEW independent run, not checkpoint resume.")
+    parser.add_argument("--run-suffix", default=None,
+                        help="Separate run name such as E4_long. Starts from scratch, not resume.")
     parser.add_argument("--experiment", default=None,
                         help="Entry from configs/v2/experiment_matrix.yaml, e.g. E3 or E4_attention.")
     parser.add_argument("--matrix", default=str(ROOT / "configs" / "v2" / "experiment_matrix.yaml"))
@@ -61,8 +66,14 @@ def main():
         "gap", "max", "attention", "cls", "flatten", "flatten64"], default=None)
     parser.add_argument("--smoke-test", type=int, default=None, metavar="BATCHES")
     args = parser.parse_args()
+    if args.max_epochs is not None and args.max_epochs < 1:
+        parser.error("max-epochs must be positive.")
+    if args.run_suffix and not re.fullmatch(r"[A-Za-z0-9_-]+", args.run_suffix):
+        parser.error("run-suffix must contain only letters, digits, underscores or hyphens.")
 
     config = apply_experiment(load_config(args.config), args.matrix, args.experiment)
+    if args.max_epochs is not None:
+        config["train"]["epochs"] = args.max_epochs
     if args.seed is not None:
         config["seed"] = int(args.seed)
     if args.temporal_aggregation is not None:
@@ -80,6 +91,14 @@ def main():
                           ("{}_{}_seed{}".format(dataset_tag, suffix,
                                                 config.get("seed", 42))))
     run_dir = Path(args.run_dir or default_run)
+    if args.run_suffix:
+        dataset_tag = "-".join(name.lower() for name in config["data"].get("active_datasets", []))
+        run_dir = Path(args.run_dir) if args.run_dir else run_dir.parent / (
+            "{}_{}_seed{}".format(dataset_tag, args.run_suffix.lower(), config.get("seed", 42)))
+    if args.max_epochs is not None or args.run_suffix:
+        if (run_dir / "checkpoints" / "best.pt").exists() or (run_dir / "logs" / "history.csv").exists():
+            raise FileExistsError("Independent extended run would overwrite existing results: {}".format(run_dir))
+        config["train"]["optimization_scope"] = "independent-extended-budget-run (not resume)"
     config["train"]["run_dir"] = str(run_dir)
     device = resolve_device(config.get("device", "cuda"))
     seed_everything(int(config.get("seed", 42)))

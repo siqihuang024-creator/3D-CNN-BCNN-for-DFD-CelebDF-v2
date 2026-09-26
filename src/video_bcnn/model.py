@@ -17,6 +17,43 @@ def build_activation(name):
     return ACTIVATIONS[name]()
 
 
+class SequenceShuffleMixin:
+    """Permute the per-frame sequence that the TCN reads, at evaluation only.
+
+    The order control has to sit between the convolutional trunk and the
+    temporal head. Permuting raw frames also scrambles the trunk's own
+    three-frame convolutions, so a score drop there cannot be attributed to the
+    temporal head; permuting [f_1 ... f_T] leaves every frame feature intact and
+    changes only what the TCN is given. The mean head needs no such flag -- an
+    average is permutation invariant, so the control would be vacuous by
+    construction, which is why enabling this on a mean checkpoint raises.
+    """
+
+    _sequence_shuffle_seed = None
+
+    def set_sequence_shuffle(self, seed):
+        if getattr(self, "temporal_head", None) != "tcn":
+            raise ValueError(
+                "Sequence shuffling is only defined for a TCN temporal head; a "
+                "mean head averages over time and is permutation invariant.")
+        self._sequence_shuffle_seed = None if seed is None else int(seed)
+        self._sequence_shuffle_generator = (
+            None if seed is None else torch.Generator().manual_seed(int(seed)))
+
+    def _maybe_shuffle_sequence(self, sequence):
+        """sequence: [batch, steps, channels]; one permutation per item."""
+        if getattr(self, "_sequence_shuffle_seed", None) is None:
+            return sequence
+        if self.training:
+            raise ValueError("Sequence shuffle is an evaluation-only intervention.")
+        shuffled = sequence.clone()
+        for index in range(sequence.shape[0]):
+            order = torch.randperm(sequence.shape[1],
+                                   generator=self._sequence_shuffle_generator)
+            shuffled[index] = sequence[index][order.to(sequence.device)]
+        return shuffled
+
+
 def _stage_statistics(pre_activation, activated):
     with torch.no_grad():
         return {"preactivation_abs_mean": float(pre_activation.abs().mean()),
@@ -105,7 +142,7 @@ class TemporalAggregator(nn.Module):
         return self.projection(values.flatten(1))
 
 
-class Stable3DFeatureExtractor(nn.Module):
+class Stable3DFeatureExtractor(SequenceShuffleMixin, nn.Module):
     """Three original Conv3d stages plus legacy mean or V2 TCN head."""
     input_mode = "clip"
 
@@ -182,7 +219,7 @@ class Stable3DFeatureExtractor(nn.Module):
         function = F.adaptive_avg_pool3d if self.final_pool_type == "avg" else F.adaptive_max_pool3d
         return function(values, target)
 
-    def forward(self, clips):
+    def _trunk(self, clips):
         if clips.dim() != 5 or clips.shape[1] != 3:
             raise ValueError("Expected RGB clips shaped [B,3,T,H,W].")
         if min(clips.shape[-2:]) < 64:
@@ -195,12 +232,24 @@ class Stable3DFeatureExtractor(nn.Module):
             values = self.activation(pre)
             stats.append(_stage_statistics(pre, values))
         self.last_activation_stats = stats
-        values = self._spatial_reduce(values)
-        if self.temporal_head == "mean":
-            return self.output_norm(values.mean(2)).flatten(1)
-        values = self.output_norm(values)
+        return self._spatial_reduce(values)
+
+    def trunk_sequence(self, clips):
+        """[B,3,T,H,W] -> [B,T,C] exactly what the temporal head is handed.
+
+        Split out so an order control can cache this once and then re-run only
+        the head under many permutations; forward() goes through the same two
+        calls, so the cached path cannot drift from the trained one.
+        """
+        if self.temporal_head != "tcn":
+            raise ValueError("Only the TCN head reads a sequence; the mean head "
+                             "averages over time inside the trunk.")
+        values = self.output_norm(self._trunk(clips))
         batch, _, steps, _, _ = values.shape
-        sequence = values.permute(0, 2, 1, 3, 4).reshape(batch, steps, -1)
+        return values.permute(0, 2, 1, 3, 4).reshape(batch, steps, -1)
+
+    def temporal_head_forward(self, sequence):
+        """[B,T,C] -> [B,feature_dim]; the trained TCN and aggregator."""
         temporal = self.tcn(sequence.transpose(1, 2)).transpose(1, 2)
         self.last_temporal_stats = {
             "input_std": float(sequence.detach().std(unbiased=False)),
@@ -209,8 +258,14 @@ class Stable3DFeatureExtractor(nn.Module):
                                                 for p in self.tcn.parameters())))}
         return self.aggregator(temporal)
 
+    def forward(self, clips):
+        if self.temporal_head == "mean":
+            return self.output_norm(self._trunk(clips).mean(2)).flatten(1)
+        sequence = self._maybe_shuffle_sequence(self.trunk_sequence(clips))
+        return self.temporal_head_forward(sequence)
 
-class MC3FeatureExtractor(nn.Module):
+
+class MC3FeatureExtractor(SequenceShuffleMixin, nn.Module):
     """Kinetics-pretrained MC3-18 upper bound, preserving temporal steps."""
     input_mode = "clip"
 
@@ -239,14 +294,30 @@ class MC3FeatureExtractor(nn.Module):
         self.temporal_aggregation = temporal_aggregation
         self.last_activation_stats, self.last_temporal_stats = [], {}
 
+    def trunk_sequence(self, clips):
+        """[B,3,T,H,W] -> [B,T,512]; see Stable3DFeatureExtractor.trunk_sequence."""
+        if self.temporal_head != "tcn":
+            raise ValueError("Only the TCN head reads a sequence.")
+        values = self.stem(clips)
+        for layer in (self.layer1, self.layer2, self.layer3, self.layer4):
+            values = layer(values)
+        values = F.adaptive_avg_pool3d(values, (self.temporal_steps, 1, 1))
+        return values.squeeze(-1).squeeze(-1).transpose(1, 2)
+
+    def temporal_head_forward(self, sequence):
+        values = self.tcn(sequence.transpose(1, 2)).transpose(1, 2)
+        self.last_temporal_stats = {"output_std": float(values.detach().std(unbiased=False))}
+        return self.aggregator(values)
+
     def forward(self, clips):
+        if self.temporal_head == "tcn":
+            return self.temporal_head_forward(
+                self._maybe_shuffle_sequence(self.trunk_sequence(clips)))
         values = self.stem(clips)
         for layer in (self.layer1, self.layer2, self.layer3, self.layer4):
             values = layer(values)
         values = F.adaptive_avg_pool3d(values, (self.temporal_steps, 1, 1))
         values = values.squeeze(-1).squeeze(-1).transpose(1, 2)
-        if self.temporal_head == "tcn":
-            values = self.tcn(values.transpose(1, 2)).transpose(1, 2)
         self.last_temporal_stats = {"output_std": float(values.detach().std(unbiased=False))}
         return self.aggregator(values)
 
