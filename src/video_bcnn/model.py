@@ -248,9 +248,18 @@ class Stable3DFeatureExtractor(SequenceShuffleMixin, nn.Module):
         batch, _, steps, _, _ = values.shape
         return values.permute(0, 2, 1, 3, 4).reshape(batch, steps, -1)
 
+    def tcn_sequence(self, sequence):
+        """[B,T,C] -> [B,T,C]: the trained TCN, before the aggregator.
+
+        Split out for the reason trunk_sequence was: a per-position diagnostic
+        has to read exactly the tensor the aggregator is handed, and
+        temporal_head_forward calls this, so the two cannot drift apart.
+        """
+        return self.tcn(sequence.transpose(1, 2)).transpose(1, 2)
+
     def temporal_head_forward(self, sequence):
         """[B,T,C] -> [B,feature_dim]; the trained TCN and aggregator."""
-        temporal = self.tcn(sequence.transpose(1, 2)).transpose(1, 2)
+        temporal = self.tcn_sequence(sequence)
         self.last_temporal_stats = {
             "input_std": float(sequence.detach().std(unbiased=False)),
             "output_std": float(temporal.detach().std(unbiased=False)),
@@ -304,8 +313,12 @@ class MC3FeatureExtractor(SequenceShuffleMixin, nn.Module):
         values = F.adaptive_avg_pool3d(values, (self.temporal_steps, 1, 1))
         return values.squeeze(-1).squeeze(-1).transpose(1, 2)
 
+    def tcn_sequence(self, sequence):
+        """[B,T,512] -> [B,T,512]; see Stable3DFeatureExtractor.tcn_sequence."""
+        return self.tcn(sequence.transpose(1, 2)).transpose(1, 2)
+
     def temporal_head_forward(self, sequence):
-        values = self.tcn(sequence.transpose(1, 2)).transpose(1, 2)
+        values = self.tcn_sequence(sequence)
         self.last_temporal_stats = {"output_std": float(values.detach().std(unbiased=False))}
         return self.aggregator(values)
 

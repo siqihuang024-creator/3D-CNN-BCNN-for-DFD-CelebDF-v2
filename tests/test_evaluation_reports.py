@@ -432,5 +432,334 @@ class PairedComparisonTests(unittest.TestCase):
         self.assertIsNotNone(report["deltas"]["E1-E0"]["auroc"]["low"])
 
 
+class MechanismCheckTests(unittest.TestCase):
+    """The per-position screen is only meaningful if its identity actually holds."""
+
+    @staticmethod
+    def pieces():
+        import torch
+        from video_bcnn.model import DeterministicHead
+        torch.manual_seed(0)
+        model = SequenceShuffleTests.extractor("tcn")
+        head = DeterministicHead(512, 0, .2).eval()
+        return model, head
+
+    def test_per_position_logits_average_to_the_pooled_logit(self):
+        import torch
+        model, head = self.pieces()
+        sequence = torch.randn(3, 8, 512)
+        with torch.no_grad():
+            temporal = model.tcn_sequence(sequence)
+            pooled = head(model.aggregator(temporal))
+            per_step = head(temporal)
+        self.assertEqual(tuple(per_step.shape), (3, 8))
+        np.testing.assert_allclose(per_step.mean(1).numpy(), pooled.numpy(),
+                                   rtol=0, atol=1e-5)
+
+    def test_tcn_sequence_is_the_tensor_the_aggregator_receives(self):
+        import torch
+        model, _ = self.pieces()
+        sequence = torch.randn(2, 8, 512)
+        with torch.no_grad():
+            np.testing.assert_allclose(
+                model.temporal_head_forward(sequence).numpy(),
+                model.aggregator(model.tcn_sequence(sequence)).numpy(),
+                rtol=0, atol=0)
+
+    def test_position_screen_mean_branch_reproduces_the_cached_score(self):
+        import torch
+        from scripts.e4_mechanism_checks import per_position_anomalies, position_screen
+        from scripts.temporal_order_control import cache_sequences, score
+        device = torch.device("cpu")
+        model, head = self.pieces()
+        batches = [{"clips": torch.randn(1, 2, 3, 8, 64, 64), "label": torch.tensor([label]),
+                    "relative_path": ["{}.mp4".format(index)], "dataset": ["CelebDFv3"],
+                    "method": ["real" if label else "fake"],
+                    "target_id": ["person{}".format(index)], "source_clip": ["source"]}
+                   for index, label in enumerate((1, 0, 1, 0))]
+        sequences, metadata = cache_sequences(model, batches, device, 2)
+        ordered = score(sequences, model, head, device, chunk=2)
+        positions, feature_path, clip_logits = per_position_anomalies(
+            sequences, model, head, device, 2)
+        # Per clip, not only per video: video-level agreement can hide clip
+        # errors of opposite sign that cancel when the clips are averaged.
+        for item, logits in zip(positions, clip_logits):
+            np.testing.assert_allclose(item.mean(axis=1), logits, rtol=0, atol=1e-5)
+        np.testing.assert_allclose(feature_path, ordered, rtol=0, atol=1e-5)
+        step_mean = np.asarray([float(item.mean()) for item in positions])
+        np.testing.assert_allclose(step_mean, ordered, rtol=0, atol=1e-5)
+        with tempfile.TemporaryDirectory() as directory:
+            reference = Path(directory) / "reference.csv"
+            with reference.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["video_id", "label_real", "video_score"])
+                for row, value in zip(metadata, ordered):
+                    writer.writerow([row["video_id"], row["label_real"], value])
+            report, positions = position_screen(sequences, metadata, model, head,
+                                                device, 2, reference, 1e-4, 1e-3, 5, 42)
+        self.assertEqual(np.stack(positions).shape, (4, 2, 8))
+        self.assertTrue(report["mean_branch_reference_check"]["passed"])
+        self.assertLess(report["per_position_decomposition_max_abs_error_per_clip"], 1e-3)
+        self.assertEqual(report["clips_checked"], 8)
+        # Pooling every clip-position at once equals the within-clip mean.
+        self.assertLess(report["pooled_versus_within_clip_mean_max_abs_error"], 1e-6)
+        self.assertIn("max-mean", report["bootstrap"]["deltas"])
+
+    def test_decomposition_holds_under_cuda_amp_where_the_screen_actually_runs(self):
+        """The identity is exact in real arithmetic; autocast is where it could fail."""
+        import torch
+        from scripts.e4_mechanism_checks import per_position_anomalies
+        if not torch.cuda.is_available():
+            self.skipTest("no CUDA device; run this on the training host")
+        device = torch.device("cuda")
+        model, head = self.pieces()
+        model, head = model.to(device), head.to(device)
+        sequences = [torch.randn(4, 8, 512) for _ in range(3)]
+        positions, _, clip_logits = per_position_anomalies(sequences, model, head, device, 2)
+        error = max(float(np.max(np.abs(item.mean(axis=1) - logits)))
+                    for item, logits in zip(positions, clip_logits))
+        # Looser than the CPU bound: fp16 accumulation over 512 channels is not
+        # exact. The script's default tolerance is 1e-3 for the same reason.
+        self.assertLess(error, 1e-3)
+
+    def test_position_screen_rejects_a_broken_decomposition(self):
+        import torch
+        from scripts.e4_mechanism_checks import position_screen
+        model, head = self.pieces()
+        device = torch.device("cpu")
+        sequences = [torch.randn(2, 8, 512) for _ in range(2)]
+        metadata = [{"video_id": "v{}".format(index), "label_real": index,
+                     "identity": "id{}".format(index)} for index in range(2)]
+        with self.assertRaisesRegex(ValueError, "decomposition does not hold"):
+            position_screen(sequences, metadata, model, head, device, 2,
+                            None, 1e-4, -1.0, 5, 42)
+
+    def test_aggregations_read_the_fake_end_of_the_positions(self):
+        from scripts.e4_mechanism_checks import aggregate_positions
+        values = np.asarray([[0.0, 1.0, 2.0, 3.0]])
+        self.assertEqual(aggregate_positions(values, "max")[0], 3.0)
+        self.assertEqual(aggregate_positions(values, "min")[0], 0.0)
+        self.assertEqual(aggregate_positions(values, "top2")[0], 2.5)
+        self.assertEqual(aggregate_positions(values, "mean")[0], 1.5)
+        with self.assertRaises(ValueError):
+            aggregate_positions(values, "top9")
+
+    def test_score_agreement_separates_a_shift_from_a_reordering(self):
+        from scripts.e4_mechanism_checks import score_agreement
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "conditions.csv"
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["video_id", "label_real", "identity",
+                                 "ordered", "shuffled_0", "reversed"])
+                for index, (label, ordered) in enumerate(zip([1, 1, 0, 0],
+                                                             [0.0, 1.0, 2.0, 3.0])):
+                    # shuffled_0 is a rigid shift: ranking intact, scores moved.
+                    # reversed inverts the ranking outright.
+                    writer.writerow(["v{}".format(index), label, "id{}".format(index),
+                                     ordered, ordered + 0.5, -ordered])
+            report = score_agreement(path)
+            self.assertFalse(report["ordered_matches_published_scores"]["checked"])
+        shifted = report["conditions"]["shuffled_0"]["all"]
+        self.assertAlmostEqual(shifted["spearman"], 1.0, places=6)
+        self.assertAlmostEqual(shifted["mae"], 0.5, places=6)
+        self.assertAlmostEqual(shifted["max_abs_difference"], 0.5, places=6)
+        self.assertAlmostEqual(report["conditions"]["reversed"]["all"]["spearman"],
+                               -1.0, places=6)
+        self.assertEqual(set(report["conditions"]["shuffled_0"]), {"all", "real", "fake"})
+        self.assertIn("pearson", report["shuffle_summary"])
+
+    def test_score_agreement_rejects_a_csv_from_another_run(self):
+        """Any file with an 'ordered' column parses, so provenance has to be checked."""
+        from scripts.e4_mechanism_checks import score_agreement
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            conditions = root / "conditions.csv"
+            with conditions.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["video_id", "label_real", "identity", "ordered", "reversed"])
+                for index, (label, value) in enumerate(zip([1, 0], [0.25, 0.75])):
+                    writer.writerow(["v{}".format(index), label, "id0", value, value])
+            published = root / "published.csv"
+            published.write_text(
+                "video_id,label_real,video_score\nv0,1,0.25\nv1,0,0.75\n", encoding="utf-8")
+            report = score_agreement(conditions, published)
+            self.assertTrue(report["ordered_matches_published_scores"]["passed"])
+            other_run = root / "other.csv"
+            other_run.write_text(
+                "video_id,label_real,video_score\nv0,1,0.30\nv1,0,0.75\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "differs"):
+                score_agreement(conditions, other_run)
+            renamed = root / "renamed.csv"
+            renamed.write_text(
+                "video_id,label_real,video_score\nx0,1,0.25\nx1,0,0.75\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "identical video IDs"):
+                score_agreement(conditions, renamed)
+
+    def test_tap_norms_flag_a_centre_dominated_kernel(self):
+        import torch
+        from scripts.e4_mechanism_checks import temporal_tap_norms
+        state = {"tcn.0.conv.weight": torch.zeros(2, 2, 3),
+                 "tcn.0.norm.weight": torch.full((2,), 0.25)}
+        state["tcn.0.conv.weight"][:, :, 1] = 1.0
+        blocks = temporal_tap_norms(state)
+        self.assertAlmostEqual(blocks["0"]["centre_share"], 1.0)
+        self.assertAlmostEqual(blocks["0"]["uniform_share"], 1 / 3)
+        self.assertAlmostEqual(blocks["0"]["residual_norm_weight_abs_mean"], 0.25)
+        balanced = {"tcn.1.conv.weight": torch.ones(2, 2, 3)}
+        self.assertAlmostEqual(temporal_tap_norms(balanced)["1"]["centre_share"], 1 / 3)
+
+    def test_tap_norm_report_needs_a_tcn_checkpoint(self):
+        from scripts.e4_mechanism_checks import tap_norm_report
+        with self.assertRaisesRegex(ValueError, "No TCN Conv1d weights"):
+            tap_norm_report({}, {"model": {"temporal_head": "tcn"}})
+
+    def test_sequence_cache_round_trips_and_checks_its_length(self):
+        import torch
+        from scripts.temporal_order_control import load_sequence_cache, save_sequence_cache
+        sequences = [torch.randn(2, 8, 512), torch.randn(2, 8, 512)]
+        metadata = [{"video_id": "v0"}, {"video_id": "v1"}]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cache.pt"
+            save_sequence_cache(path, sequences, metadata, __file__, "val")
+            restored, rows, payload = load_sequence_cache(path, expected_videos=2)
+            self.assertEqual(payload["split"], "val")
+            self.assertEqual(payload["steps"], 8)
+            self.assertEqual([row["video_id"] for row in rows], ["v0", "v1"])
+            torch.testing.assert_close(restored[0], sequences[0])
+            with self.assertRaisesRegex(ValueError, "expected 3"):
+                load_sequence_cache(path, expected_videos=3)
+
+
+    def test_main_runs_all_three_checks_from_a_cached_trunk_pass(self):
+        import torch
+        from unittest.mock import patch
+        from scripts import e4_mechanism_checks as checks
+        from scripts.temporal_order_control import cache_sequences, save_sequence_cache, score
+        device = torch.device("cpu")
+        model, head = self.pieces()
+        config = {"seed": 42,
+                  "data": {"dataset_roots": {"CelebDFv3": "unused"}, "num_workers": 0,
+                           "eval_clip_chunk_size": 2, "eval_clips_per_video": 2},
+                  "model": {"temporal_head": "tcn", "temporal_aggregation": "gap",
+                            "temporal_steps": 8, "spatial_output_size": 4,
+                            "feature_dim": 512, "deterministic_hidden_dim": 0}}
+        batches = [{"clips": torch.randn(1, 2, 3, 8, 64, 64), "label": torch.tensor([label]),
+                    "relative_path": ["{}.mp4".format(index)], "dataset": ["CelebDFv3"],
+                    "method": ["real" if label else "fake"],
+                    "target_id": ["person{}".format(index)], "source_clip": ["source"]}
+                   for index, label in enumerate((1, 0, 1, 0))]
+        sequences, metadata = cache_sequences(model, batches, device, 2)
+        ordered = score(sequences, model, head, device, chunk=2)
+        checkpoint = {"stage": "phase_a", "config": config,
+                      "extractor": model.state_dict(), "head": head.state_dict()}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            save_sequence_cache(root / "cache.pt", sequences, metadata, "unused", "val")
+            with (root / "reference.csv").open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["video_id", "label_real", "video_score"])
+                for row, value in zip(metadata, ordered):
+                    writer.writerow([row["video_id"], row["label_real"], value])
+            with (root / "conditions.csv").open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["video_id", "label_real", "identity", "ordered", "shuffled_0"])
+                for row, value in zip(metadata, ordered):
+                    writer.writerow([row["video_id"], row["label_real"],
+                                     row["identity"], value, value + 0.25])
+            output = root / "checks.json"
+            args = ["checks", "--checkpoint", str(root / "checkpoints" / "best.pt"),
+                    "--order-control-scores", str(root / "conditions.csv"),
+                    "--sequence-cache", str(root / "cache.pt"),
+                    "--reference-scores", str(root / "reference.csv"),
+                    "--expected-videos", "4", "--draws", "5", "--output", str(output)]
+            with patch.object(sys, "argv", args), \
+                 patch.object(checks, "load_checkpoint", return_value=checkpoint):
+                self.assertEqual(checks.main(), 0)
+            report = json.loads(output.read_text(encoding="utf-8"))
+        self.assertAlmostEqual(
+            report["score_agreement"]["conditions"]["shuffled_0"]["all"]["mae"], 0.25, places=6)
+        self.assertIn("0", report["temporal_tap_norms"]["trained"])
+        screen = report["position_screen"]
+        self.assertTrue(screen["sequence_cache"]["reused"])
+        self.assertTrue(screen["mean_branch_reference_check"]["passed"])
+        self.assertIn("max", screen["within_clip"])
+        # The pooled family is exploratory and must stay labelled as such.
+        self.assertIn("scope", screen["pooled_over_all_positions"])
+        self.assertIn("max", screen["pooled_over_all_positions"]["metrics"])
+        self.assertIsNotNone(screen["dispersion"]["real"])
+
+    def test_main_refuses_a_head_that_breaks_the_decomposition(self):
+        from unittest.mock import patch
+        from scripts import e4_mechanism_checks as checks
+        model, head = self.pieces()
+        config = {"seed": 42, "data": {},
+                  "model": {"temporal_head": "tcn", "temporal_aggregation": "gap",
+                            "deterministic_hidden_dim": 64}}
+        checkpoint = {"stage": "phase_a", "config": config,
+                      "extractor": model.state_dict(), "head": head.state_dict()}
+        with tempfile.TemporaryDirectory() as directory:
+            args = ["checks", "--checkpoint", "unused/best.pt",
+                    "--output", str(Path(directory) / "out.json")]
+            with patch.object(sys, "argv", args), \
+                 patch.object(checks, "load_checkpoint", return_value=checkpoint):
+                with self.assertRaisesRegex(ValueError, "single linear"):
+                    checks.main()
+            config["model"]["deterministic_hidden_dim"] = 0
+            config["model"]["temporal_aggregation"] = "attention"
+            with patch.object(sys, "argv", args), \
+                 patch.object(checks, "load_checkpoint", return_value=checkpoint):
+                with self.assertRaisesRegex(ValueError, "assumes GAP"):
+                    checks.main()
+
+
+class VramProbeTests(unittest.TestCase):
+    def test_frame_size_follows_the_preprocessing_path(self):
+        from vram_probe import frame_size
+        face = {"data": {"frame_mode": "face", "center_crop": 256}, "model": {}}
+        self.assertEqual(frame_size(face, None, 1080, 1920), (256, 256))
+        # Decimation never resizes, so input_resize in the config is a red herring.
+        decimate = {"data": {"frame_mode": "decimate", "decimate_step": 2},
+                    "model": {"center_crop": 256}}
+        self.assertEqual(frame_size(decimate, None, 1080, 1920), (540, 960))
+        self.assertEqual(frame_size(decimate, 3, 1080, 1920), (360, 640))
+
+    def test_variants_cover_the_three_rungs(self):
+        from vram_probe import VARIANTS
+        self.assertEqual(VARIANTS["e2"]["feature_dim"], 32 * 22 * 22)
+        self.assertEqual(VARIANTS["e3"]["temporal_head"], "mean")
+        self.assertEqual(VARIANTS["e4"]["temporal_head"], "tcn")
+
+
+class DfdBatchProtocolTests(unittest.TestCase):
+    def test_dfd_trains_with_the_same_batch_composition_as_celeb(self):
+        """Accumulation does not change what BatchNorm sees, so the physical batch must match."""
+        import yaml
+        celeb = yaml.safe_load((ROOT / "configs/v2/phase_a_celeb.yaml").read_text(encoding="utf-8"))
+        dfd = yaml.safe_load((ROOT / "configs/v2/phase_a_dfd.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(dfd["train"]["physical_batch_size"],
+                         celeb["train"]["physical_batch_size"])
+        self.assertEqual(dfd["train"].get("gradient_accumulation_steps", 1), 1)
+        # Two balance groups (real, fake) and a batch of eight give 4 + 4.
+        self.assertEqual(dfd["train"]["physical_batch_size"] % 2, 0)
+        self.assertEqual(dfd["data"]["train_balance_keys"],
+                         celeb["data"]["train_balance_keys"])
+
+    def test_matrix_entries_do_not_quietly_restore_the_small_dfd_batch(self):
+        """The matrix overrides the config, so a stale entry there would undo the above."""
+        from video_bcnn.utils import apply_experiment, load_config
+        matrix = str(ROOT / "configs/v2/experiment_matrix.yaml")
+        base = str(ROOT / "configs/v2/phase_a_dfd.yaml")
+        for experiment in ("E2_dfd", "E3", "E4_gap", "E4_attention", "E4_flatten"):
+            config = apply_experiment(load_config(base), matrix, experiment)
+            self.assertEqual(config["train"]["physical_batch_size"], 8, experiment)
+            self.assertEqual(config["train"].get("gradient_accumulation_steps", 1), 1,
+                             experiment)
+        # E0 and E1 are the batch-size intervention itself and stay at one.
+        for experiment in ("E0", "E1"):
+            config = apply_experiment(load_config(base), matrix, experiment)
+            self.assertEqual(config["train"]["physical_batch_size"], 1, experiment)
+
+
 if __name__ == "__main__":
     unittest.main()

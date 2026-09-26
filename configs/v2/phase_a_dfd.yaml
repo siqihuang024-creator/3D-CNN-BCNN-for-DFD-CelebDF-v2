@@ -6,6 +6,13 @@ data:
     DFD: E:/PhD/Deepfake Video TCN+BCNN/Datasets/DFD-Kaggle
     CelebDFv3: E:/PhD/Deepfake Video TCN+BCNN/Datasets/CelebDFv3/CelebDFv3
   frame_mode: decimate
+  # The memory lever for the physical batch of 8 below. Step 2 gives 960x540,
+  # step 3 gives 640x360 at 44% of the pixels and 44% of the activations, and
+  # neither changes a layer -- unlike conv1 stride 2, which would make DFD a
+  # different architecture from CelebDF++. Set it from vram_probe.py on the
+  # actual card rather than from an extrapolation, then keep the chosen step
+  # fixed for the whole DFD chain: E2, E3, E4 and the order control are only
+  # comparable with each other at one input scale.
   decimate_step: 2
   face_crop: false
   clip_length: 32
@@ -44,8 +51,14 @@ train:
   run_dir: artifacts/v2/dfd_e4_gap_seed42
   epochs: 60
   clips_per_class_per_epoch: 1000
-  physical_batch_size: 4
-  gradient_accumulation_steps: 2
+  # Eight, matching CelebDF++, and not four with accumulation two. Accumulation
+  # reproduces the optimizer's effective batch but leaves batch normalisation
+  # looking at the physical batch, and BN composition is the largest single
+  # effect measured on this ladder (E1 to E2, +0.119 AUROC). A DFD run whose BN
+  # sees 2 real + 2 fake would not be comparable with CelebDF++ at 4 + 4, and
+  # the cross-dataset question is the whole reason for running DFD.
+  physical_batch_size: 8
+  gradient_accumulation_steps: 1
   precision: amp
   learning_rate: 0.0001
   lr_gamma: 0.95

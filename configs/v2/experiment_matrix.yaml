@@ -14,9 +14,14 @@ E2_celeb:
           temporal_head: mean, temporal_aggregation: gap}
   train: {physical_batch_size: 8, gradient_accumulation_steps: 1}
 E2_dfd:
+  # Same batch as E2_celeb on purpose. This entry used to force 4 with
+  # accumulation 2, which would have overridden phase_a_dfd.yaml and left DFD's
+  # BatchNorm looking at 2 real + 2 fake against CelebDF++'s 4 + 4 -- the one
+  # variable the ladder already showed to be worth +0.119 AUROC. If it does not
+  # fit, raise data.decimate_step (fewer pixels), not this.
   model: {spatial_output_size: 22, feature_dim: 15488,
           temporal_head: mean, temporal_aggregation: gap}
-  train: {physical_batch_size: 4, gradient_accumulation_steps: 2}
+  train: {physical_batch_size: 8, gradient_accumulation_steps: 1}
 E3:
   model: {spatial_output_size: 4, feature_dim: 512,
           temporal_head: mean, temporal_aggregation: gap}

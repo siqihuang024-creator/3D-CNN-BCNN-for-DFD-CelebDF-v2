@@ -86,6 +86,36 @@ def cache_sequences(extractor, loader, device, chunk=4):
     return sequences, meta
 
 
+def save_sequence_cache(path, sequences, metadata, checkpoint, split):
+    """Persist the trunk pass so later diagnostics do not repeat it.
+
+    Decoding plus the 3D-CNN is the whole cost of this control (roughly an hour
+    for CelebDF++ full validation); everything downstream is seconds. The file
+    carries no guarantee of its own -- whoever loads it must re-verify the
+    ordered scores against the run's own full-val CSV, which fails loudly if
+    the cache came from another checkpoint, split or preprocessing path.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({"sequences": sequences, "metadata": metadata,
+                "checkpoint": str(Path(checkpoint).resolve()), "split": split,
+                "videos": len(sequences),
+                "steps": int(sequences[0].shape[1]) if sequences else 0}, path)
+    return {"path": str(path.resolve()), "videos": len(sequences)}
+
+
+def load_sequence_cache(path, expected_videos=None):
+    payload = torch.load(path, map_location="cpu")
+    sequences, metadata = payload["sequences"], payload["metadata"]
+    if len(sequences) != len(metadata):
+        raise ValueError("Sequence cache is inconsistent: {} tensors, {} metadata rows."
+                         .format(len(sequences), len(metadata)))
+    if expected_videos is not None and len(sequences) != expected_videos:
+        raise ValueError("Sequence cache holds {} videos, expected {}.".format(
+            len(sequences), expected_videos))
+    return sequences, metadata, payload
+
+
 @torch.no_grad()
 def score(sequences, extractor, head, device, permute=None, generator=None,
           bypass_head=False, metadata=None, condition_seed=None, chunk=4):
@@ -224,6 +254,10 @@ def main():
     parser.add_argument("--reference-scores", default=None,
                         help="Ordered full-val CSV. Defaults to checkpoint run/reports/full_val_video_scores.csv.")
     parser.add_argument("--reference-atol", type=float, default=1e-4)
+    parser.add_argument("--sequence-cache", default=None,
+                        help="Write the cached pre-TCN sequences here so the per-step "
+                             "screen in e4_mechanism_checks.py can reuse this trunk pass "
+                             "instead of repeating it. Roughly 2 GB for CelebDF++ full val.")
     parser.add_argument("--output", default="results/v2/temporal_order_control.json")
     args = parser.parse_args()
     if args.shuffle_seeds < 1 or args.draws < 1 or args.reference_atol < 0:
@@ -295,6 +329,11 @@ def main():
     conditions = {"ordered": score(sequences, extractor, head, device, chunk=chunk)}
     reference_check = (verify_reference(meta, conditions["ordered"], reference, args.reference_atol)
                        if args.max_videos is None else {"passed": None, "scope": "debug-subset"})
+    # Only after the ordered branch matched full-val: a cache nobody checked is
+    # worse than no cache, because the next script would inherit the mistake.
+    cache_info = (save_sequence_cache(args.sequence_cache, sequences, meta,
+                                      args.checkpoint, args.split)
+                  if args.sequence_cache else None)
     condition_seeds = {}
     for draw in range(int(args.shuffle_seeds)):
         name = "shuffled_{}".format(draw)
@@ -316,6 +355,7 @@ def main():
               "shuffle_seeds": int(args.shuffle_seeds),
               "condition_seeds": condition_seeds, "seed": seed,
               "cluster_key": cluster_key, "ordered_reference_check": reference_check,
+              "sequence_cache": cache_info,
               "evaluation_scope": "debug-subset" if args.max_videos else "full-" + args.split,
               "inference_precision": "cuda-amp" if device.type == "cuda" else "float32",
               "cache_dtypes": sorted({str(item.dtype) for item in sequences}),
