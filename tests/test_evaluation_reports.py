@@ -517,6 +517,47 @@ class MechanismCheckTests(unittest.TestCase):
         self.assertEqual(gaps.size, 6)
         self.assertLess(float(gaps.max()), 1e-5)
 
+    def test_reference_branch_is_the_published_path_not_a_rewrite(self):
+        """An arithmetically identical rewrite still cost a run; the check calls score().
+
+        On the remote card the re-derived AMP branch landed 2.44e-04 -- one fp16
+        ulp -- from full_val_video_scores.csv, because chunk shape decides which
+        GEMM kernel runs and therefore how it rounds. The screen's own scores
+        must never stand in for the published ones.
+        """
+        import torch
+        from scripts.e4_mechanism_checks import position_screen
+        from scripts.temporal_order_control import cache_sequences, score
+        from scripts.compare_experiments import ranking_metrics
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model, head = self.pieces()
+        model, head = model.to(device), head.to(device)
+        batches = [{"clips": torch.randn(1, 4, 3, 8, 64, 64), "label": torch.tensor([label]),
+                    "relative_path": ["{}.mp4".format(index)], "dataset": ["CelebDFv3"],
+                    "method": ["real" if label else "fake"],
+                    "target_id": ["person{}".format(index)], "source_clip": ["source"]}
+                   for index, label in enumerate((1, 0, 1, 0))]
+        sequences, metadata = cache_sequences(model, batches, device, 2)
+        published = score(sequences, model, head, device, chunk=2)
+        labels = np.asarray([row["label_real"] for row in metadata])
+        with tempfile.TemporaryDirectory() as directory:
+            reference = Path(directory) / "published.csv"
+            with reference.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["video_id", "label_real", "video_score"])
+                for row, value in zip(metadata, published):
+                    writer.writerow([row["video_id"], row["label_real"], value])
+            # Zero tolerance: the branch must be score() itself, not an equal-
+            # in-real-arithmetic substitute for it.
+            report, _ = position_screen(sequences, metadata, model, head, device, 2,
+                                        reference, 0.0, 1e-4, 5, 42, "float32")
+        self.assertTrue(report["mean_branch_reference_check"]["passed"])
+        self.assertEqual(report["mean_branch_reference_check"]["max_abs_score_error"], 0.0)
+        self.assertEqual(report["numerics"]["reference_branch"],
+                         "temporal_order_control.score")
+        self.assertAlmostEqual(report["numerics"]["amp_mean_auroc"],
+                               ranking_metrics(labels, published)["auroc"], places=12)
+
     def test_float32_screen_is_tight_where_autocast_is_not(self):
         """Regression for the first remote run, which tripped a tolerance set for fp32.
 

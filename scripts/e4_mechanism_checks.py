@@ -71,7 +71,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from compare_experiments import (choose_clusters, paired_cluster_bootstrap,  # noqa: E402
                                  ranking_metrics)
 from temporal_order_control import (cache_sequences, load_sequence_cache,  # noqa: E402
-                                    save_sequence_cache, verify_reference)
+                                    save_sequence_cache, score, verify_reference)
 from video_bcnn.data import (load_manifest, preflight_face_cache,  # noqa: E402
                              seed_worker, skip_unreadable_collate)
 from video_bcnn.experiment import active_records, make_dataset, select_records  # noqa: E402
@@ -404,17 +404,21 @@ def position_screen(sequences, metadata, extractor, head, device, chunk,
     # the cached sequences and buys the provenance guarantee plus a number worth
     # having on its own: how far the precision alone moves a video score, which
     # is the floor under any small AUROC difference read off this screen.
+    # The branch that has to reproduce the published scores is not a second
+    # implementation of the published path -- it is that path. score() is the
+    # function whose ordered branch already matched full_val_video_scores.csv
+    # to the last bit, so it is called rather than imitated. Re-deriving it
+    # here once cost a run: an arithmetically identical rewrite still landed
+    # one fp16 ulp away on the remote card, because how a chunk is shaped
+    # decides which GEMM kernel runs and therefore how it rounds. Nothing
+    # below may substitute the screen's own scores for these.
+    reference_scores = score(sequences, extractor, head, device, chunk=chunk)
     numerics = {"screen_precision": precision,
-                "published_scores_precision": "cuda-amp"}
-    if precision == "float32" and device.type == "cuda":
-        _, feature_path_amp, _ = per_position_anomalies(
-            sequences, extractor, head, device, chunk, "amp")
-        numerics["amp_versus_float32_video_score_max_abs_difference"] = float(
-            np.max(np.abs(feature_path - feature_path_amp)))
-        numerics["amp_mean_auroc"] = ranking_metrics(labels, feature_path_amp)["auroc"]
-        reference_scores = feature_path_amp
-    else:
-        reference_scores = feature_path
+                "published_scores_precision": "cuda-amp",
+                "reference_branch": "temporal_order_control.score",
+                "amp_mean_auroc": ranking_metrics(labels, reference_scores)["auroc"],
+                "screen_versus_published_video_score_max_abs_difference": float(
+                    np.max(np.abs(feature_path - reference_scores)))}
 
     # Third and separate check: the two orderings on one identical post-TCN
     # tensor. If the screen's float32 numbers were ever to disagree, this is
@@ -695,10 +699,12 @@ def print_report(report):
         surgical = screen["linear_path_equivalence"]
         print("same post-TCN tensor, both linear orderings in float32: max %.2g "
               "over %d clips" % (surgical["max_abs_error"], surgical["clips_checked"]))
-        shift = screen["numerics"].get("amp_versus_float32_video_score_max_abs_difference")
+        shift = screen["numerics"].get(
+            "screen_versus_published_video_score_max_abs_difference")
         if shift is not None:
-            print("autocast moves a video score by at most %.3g; treat AUROC "
-                  "differences near that scale as numerics" % shift)
+            print("screen precision moves a video score by at most %.3g against the "
+                  "published path; treat AUROC differences near that scale as numerics"
+                  % shift)
 
 
 if __name__ == "__main__":

@@ -148,8 +148,19 @@ i.e. 64 raw frames, so more clips raise sampling density without resolving
 anything below that window. The per-position screen asks the sparsity question
 at the scale it was meant for, and at a fraction of the cost.
 
-Precision. The screen runs in float32 while the published evaluation ran
-under autocast, and the two are deliberately separated. The first remote
+Precision. Three separate checks, deliberately not merged, because two remote
+attempts each failed on a different one of them:
+
+  decomposition -- the screen's own float32 identity, per clip, which is the
+  number the aggregation comparison rests on;
+  linear_path_equivalence -- the published-precision TCN output widened to
+  float32, both orderings of the linear map compared on that one tensor, which
+  is what tells a rounding effect apart from an implementation error;
+  numerics -- how far the screen's precision moves a video score against the
+  published path, which is the floor under any AUROC difference read here.
+
+The screen runs in float32 while the published evaluation ran under autocast,
+and the two are deliberately separated. The first remote
 attempt stopped here: the two paths disagreed by 4.06e-03 on the worst of
 65,640 clips against a 1e-3 gate. That was the gate being wrong, not the
 model. The paths differ only in the order of a linear map and a mean, so they
@@ -158,10 +169,15 @@ fp16 step is already 1.3e-2, so the observed gap is about a third of one unit
 in the last place. Measured on the same architecture locally: float32 1.9e-06,
 autocast 3.2e-03 at a slightly smaller logit scale. Running the screen in
 float32 also keeps fp16 noise from deciding which of 32 positions wins a max.
-The autocast branch is still computed, because the published scores were made
-with it and reproducing them is what ties the cache to the checkpoint; the
-report states how far the precision alone moves a video score, which is the
-floor under any AUROC difference read off this screen.
+The branch that reproduces the published scores is temporal_order_control's
+score() itself, called rather than reimplemented. The second remote attempt
+failed on exactly that distinction: a rewrite that is identical in real
+arithmetic still landed 2.44e-04 -- one fp16 ulp -- from
+full_val_video_scores.csv, because the shape of a chunk decides which GEMM
+kernel runs and therefore how it rounds. The same rewrite is bit-identical to
+score() on an RTX 3060, so the effect is card-specific and cannot be found by
+local testing; the standing rule is that a published number is reproduced by
+calling the code that produced it.
 
 It needs one trunk pass unless a cache exists. Pass --sequence-cache to the
 order control to write it there, or to this script to have it written on the
