@@ -244,29 +244,42 @@ def aggregate_positions(anomalies, name):
 
 
 @torch.no_grad()
-def per_position_anomalies(sequences, extractor, head, device, chunk=4):
+def per_position_anomalies(sequences, extractor, head, device, chunk=4,
+                           precision="float32"):
     """Per-position anomalies, the video score, and the per-clip logits beside them.
 
     The feature path (aggregate, then classify) is what the training and the
     published evaluation ran, so it is the branch compared against full-val.
     The position path (classify, then aggregate) is the new one, and the two
-    must agree for the mean aggregation -- that agreement is measured rather
-    than assumed, because autocast makes the identity exact only in real
-    arithmetic.
+    are equal in real arithmetic, so any gap between them is rounding.
+
+    Which is why the screen runs in float32 by default while the published
+    evaluation ran under autocast. The clip logits of the E4 run reach 13.7 in
+    absolute value, and a single fp16 step at that magnitude is 1.3e-2, so the
+    two paths can disagree by a few times 1e-3 out of pure rounding -- of the
+    same order as the AUROC differences the screen is looking for, and enough
+    to change which of 32 positions wins a max. float32 removes both problems
+    and costs minutes on cached sequences. Pass precision="amp" to reproduce
+    the published numerics instead, which is what the reference check needs.
 
     The per-clip logits are returned unaveraged on purpose. Comparing the two
     paths only at video level would let a positive error on one clip cancel a
     negative one on another and report agreement that does not hold anywhere.
     """
+    use_amp = precision == "amp" and device.type == "cuda"
+    if precision not in ("amp", "float32"):
+        raise ValueError("precision must be 'amp' or 'float32'.")
     extractor.eval()
     head.eval()
     positions, feature_path, clip_logits = [], [], []
-    for item in tqdm(sequences, desc="Per-position logits"):
-        batch = item.to(device)
+    for item in tqdm(sequences, desc="Per-position logits ({})".format(precision)):
+        # The cache is fp16, as the published run produced it. Widening it is
+        # exact, so float32 reads the same inputs at higher working precision.
+        batch = item.to(device) if use_amp else item.to(device).float()
         clip_anomalies, clip_features = [], []
         for start in range(0, len(batch), chunk):
             part = batch[start:start + chunk]
-            with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
+            with torch.cuda.amp.autocast(enabled=use_amp):
                 temporal = extractor.tcn_sequence(part)          # [clips, T, C]
                 steps = head(temporal)                           # [clips, T]
                 pooled = head(extractor.aggregator(temporal))    # [clips]
@@ -276,6 +289,42 @@ def per_position_anomalies(sequences, extractor, head, device, chunk=4):
         clip_logits.append(np.concatenate(clip_features, axis=0))
         feature_path.append(float(clip_logits[-1].mean()))
     return positions, np.asarray(feature_path), clip_logits
+
+
+@torch.no_grad()
+def linear_path_equivalence(sequences, extractor, head, device, chunk=4,
+                            precision="amp"):
+    """Both orderings of the linear map, on one and the same post-TCN tensor.
+
+    The surgical form of the identity check, and the one that separates a
+    numerical explanation from an implementation error. The TCN runs exactly as
+    the published evaluation ran it, its output is widened to float32 -- which
+    is exact, not a recomputation -- and only then are "classify each position,
+    then average" and "average, then classify" compared. The TCN's own
+    precision is therefore held fixed and cannot contribute, so whatever is
+    left is the arithmetic of the two orderings alone, and in float32 that is
+    rounding at 1e-7. A gap here would mean the two paths are not the same
+    computation, which is a bug rather than a precision effect.
+
+    This is deliberately not the same measurement as the screen's own float32
+    check, where the TCN is re-run at higher precision and its output differs
+    slightly from the published one. Reporting them separately is the point.
+    """
+    use_amp = precision == "amp" and device.type == "cuda"
+    extractor.eval()
+    head.eval()
+    gaps = []
+    for item in tqdm(sequences, desc="Linear-path equivalence ({})".format(precision)):
+        batch = item.to(device) if use_amp else item.to(device).float()
+        for start in range(0, len(batch), chunk):
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                temporal = extractor.tcn_sequence(batch[start:start + chunk])
+            widened = temporal.float()
+            with torch.cuda.amp.autocast(enabled=False):
+                per_position = head(widened).mean(1)
+                pooled = head(widened.mean(1))
+            gaps.append((per_position - pooled).abs().cpu().numpy())
+    return np.concatenate(gaps)
 
 
 def dispersion(positions, labels):
@@ -299,12 +348,13 @@ def dispersion(positions, labels):
 
 
 def position_screen(sequences, metadata, extractor, head, device, chunk,
-                    reference, reference_atol, decomposition_atol, draws, seed):
+                    reference, reference_atol, decomposition_atol, draws, seed,
+                    precision="float32"):
     labels = np.asarray([row["label_real"] for row in metadata], dtype=np.int64)
     if np.unique(labels).size != 2:
         raise ValueError("The screen needs both real and fake videos.")
     positions, feature_path, clip_logits = per_position_anomalies(
-        sequences, extractor, head, device, chunk)
+        sequences, extractor, head, device, chunk, precision)
     steps = int(positions[0].shape[1])
 
     # A top-k equal to the sequence length is the mean again, so it is dropped.
@@ -318,19 +368,73 @@ def position_screen(sequences, metadata, extractor, head, device, chunk,
     # The identity the whole screen rests on, measured on real data and clip by
     # clip. The video-level figure is kept as well, but it is the weaker of the
     # two: averaging eight clips can hide per-clip errors that cancel.
-    per_clip_error = float(max(
-        np.max(np.abs(item.mean(axis=1) - logits))
-        for item, logits in zip(positions, clip_logits)))
+    #
+    # The whole distribution is reported, not only the maximum over 65,640
+    # clips. A maximum alone cannot distinguish the tail of a rounding
+    # distribution from a handful of clips where something is actually wrong,
+    # and that distinction is exactly what a reader needs when the gate trips.
+    # The errors are also scaled by the logits, because an absolute tolerance
+    # silently assumes a logit magnitude and this model's reach 13.7.
+    gaps = np.concatenate([np.abs(item.mean(axis=1) - logits)
+                           for item, logits in zip(positions, clip_logits)])
+    magnitude = float(np.sqrt(np.mean(np.concatenate(clip_logits) ** 2)))
+    per_clip_error = float(gaps.max())
     video_error = float(np.max(np.abs(within["mean"] - feature_path)))
+    decomposition = {
+        "per_clip_max_abs_error": per_clip_error,
+        "per_clip_median_abs_error": float(np.median(gaps)),
+        "per_clip_p99_abs_error": float(np.quantile(gaps, 0.99)),
+        "per_video_max_abs_error": video_error,
+        "clip_logit_rms": magnitude,
+        "per_clip_max_relative_to_logit_rms": per_clip_error / magnitude if magnitude else None,
+        "clips_checked": int(len(gaps)),
+        "tolerance": float(decomposition_atol), "precision": precision,
+    }
     if not np.isfinite(per_clip_error) or per_clip_error > decomposition_atol:
         raise ValueError(
             "Mean of per-position logits differs from the pooled logit by {:.3g} on at "
-            "least one clip, above the tolerance {}. The linear decomposition does not "
-            "hold for this checkpoint; do not read the max/top-k numbers."
-            .format(per_clip_error, decomposition_atol))
+            "least one clip (median {:.3g}, RMS logit {:.3g}), above the tolerance {}. "
+            "In float32 the two paths are the same computation, so a gap this large is "
+            "not rounding and the max/top-k numbers must not be read."
+            .format(per_clip_error, float(np.median(gaps)), magnitude, decomposition_atol))
     pooled_error = float(np.max(np.abs(pooled["mean"] - within["mean"])))
 
-    check = (verify_reference(metadata, feature_path, reference, reference_atol)
+    # The published scores were produced under autocast, so the branch that has
+    # to reproduce them is the autocast one. Running it costs a second pass over
+    # the cached sequences and buys the provenance guarantee plus a number worth
+    # having on its own: how far the precision alone moves a video score, which
+    # is the floor under any small AUROC difference read off this screen.
+    numerics = {"screen_precision": precision,
+                "published_scores_precision": "cuda-amp"}
+    if precision == "float32" and device.type == "cuda":
+        _, feature_path_amp, _ = per_position_anomalies(
+            sequences, extractor, head, device, chunk, "amp")
+        numerics["amp_versus_float32_video_score_max_abs_difference"] = float(
+            np.max(np.abs(feature_path - feature_path_amp)))
+        numerics["amp_mean_auroc"] = ranking_metrics(labels, feature_path_amp)["auroc"]
+        reference_scores = feature_path_amp
+    else:
+        reference_scores = feature_path
+
+    # Third and separate check: the two orderings on one identical post-TCN
+    # tensor. If the screen's float32 numbers were ever to disagree, this is
+    # what says whether the cause is precision or a mistake in the code.
+    surgical = linear_path_equivalence(sequences, extractor, head, device, chunk,
+                                       "amp" if device.type == "cuda" else "float32")
+    equivalence = {
+        "definition": ("published-precision TCN output widened to float32, then both "
+                       "orderings of the linear classifier compared per clip"),
+        "max_abs_error": float(surgical.max()),
+        "median_abs_error": float(np.median(surgical)),
+        "clips_checked": int(surgical.size),
+        "tolerance": float(decomposition_atol)}
+    if not np.isfinite(surgical.max()) or surgical.max() > decomposition_atol:
+        raise ValueError(
+            "On an identical post-TCN tensor in float32 the two linear orderings "
+            "differ by {:.3g}, above {}. Precision cannot explain this: it is the same "
+            "computation on the same input, so the implementation is wrong."
+            .format(float(surgical.max()), decomposition_atol))
+    check = (verify_reference(metadata, reference_scores, reference, reference_atol)
              if reference else {"passed": None, "scope": "no reference supplied"})
     cluster_key, clusters = choose_clusters(metadata)
     report = {
@@ -338,10 +442,9 @@ def position_screen(sequences, metadata, extractor, head, device, chunk,
         "real": int((labels == 1).sum()), "fake": int((labels == 0).sum()),
         "aggregations": names, "cluster_key": cluster_key,
         "mean_branch_reference_check": check,
-        "per_position_decomposition_max_abs_error_per_clip": per_clip_error,
-        "per_position_decomposition_max_abs_error_per_video": video_error,
-        "decomposition_tolerance": float(decomposition_atol),
-        "clips_checked": int(sum(len(item) for item in clip_logits)),
+        "numerics": numerics,
+        "decomposition": decomposition,
+        "linear_path_equivalence": equivalence,
         "pooled_versus_within_clip_mean_max_abs_error": pooled_error,
         "within_clip": {name: ranking_metrics(labels, values)
                         for name, values in within.items()},
@@ -427,9 +530,19 @@ def main():
                         help="Run check A without confirming that the order control CSV "
                              "belongs to this checkpoint. For inspecting an export whose "
                              "run directory is not to hand, not for results.")
-    parser.add_argument("--decomposition-atol", type=float, default=1e-3,
+    parser.add_argument("--screen-precision", choices=["float32", "amp"],
+                        default="float32",
+                        help="Working precision of the per-position screen. float32 by "
+                             "default: the two paths are equal in real arithmetic, and "
+                             "fp16 rounding on logits that reach 13.7 is the same size "
+                             "as the differences being measured. 'amp' reproduces the "
+                             "published numerics instead.")
+    parser.add_argument("--decomposition-atol", type=float, default=1e-4,
                         help="How far the mean of per-position logits may sit from the "
-                             "pooled logit. Not zero because autocast is not exact.")
+                             "pooled logit, per clip. Not zero because float32 is not "
+                             "exact either; raise it to about 2e-2 only with "
+                             "--screen-precision amp, where a single fp16 step at this "
+                             "model's logit magnitude is already 1.3e-2.")
     parser.add_argument("--draws", type=int, default=2000)
     parser.add_argument("--dump-step-logits", default=None,
                         help="Optional .npz of the per-clip, per-position anomalies.")
@@ -504,7 +617,8 @@ def main():
         screen, positions = position_screen(
             sequences, metadata, extractor, head, device,
             int(config["data"].get("eval_clip_chunk_size", 4)), reference,
-            args.reference_atol, args.decomposition_atol, args.draws, seed)
+            args.reference_atol, args.decomposition_atol, args.draws, seed,
+            args.screen_precision)
         screen["sequence_cache"] = cache_info
         report["position_screen"] = screen
         if args.dump_step_logits:
@@ -568,10 +682,23 @@ def print_report(report):
             print("%-10s %8.4f   [%+0.4f, %+0.4f]%s" % (
                 name, screen["within_clip"][name]["auroc"], auroc["low"], auroc["high"],
                 "" if auroc["high"] < 0 or auroc["low"] > 0 else "  (covers 0)"))
-        print("mean branch reproduces full-val: %s; worst per-clip "
-              "decomposition error %.3g" % (
-            screen["mean_branch_reference_check"].get("passed"),
-            screen["per_position_decomposition_max_abs_error_per_clip"]))
+        decomposition = screen["decomposition"]
+        print("mean branch reproduces full-val: %s" %
+              screen["mean_branch_reference_check"].get("passed"))
+        print("decomposition in %s over %d clips: median %.2g, p99 %.2g, max %.2g "
+              "(RMS logit %.3g)" % (
+                  decomposition["precision"], decomposition["clips_checked"],
+                  decomposition["per_clip_median_abs_error"],
+                  decomposition["per_clip_p99_abs_error"],
+                  decomposition["per_clip_max_abs_error"],
+                  decomposition["clip_logit_rms"]))
+        surgical = screen["linear_path_equivalence"]
+        print("same post-TCN tensor, both linear orderings in float32: max %.2g "
+              "over %d clips" % (surgical["max_abs_error"], surgical["clips_checked"]))
+        shift = screen["numerics"].get("amp_versus_float32_video_score_max_abs_difference")
+        if shift is not None:
+            print("autocast moves a video score by at most %.3g; treat AUROC "
+                  "differences near that scale as numerics" % shift)
 
 
 if __name__ == "__main__":

@@ -499,14 +499,33 @@ class MechanismCheckTests(unittest.TestCase):
                                                 device, 2, reference, 1e-4, 1e-3, 5, 42)
         self.assertEqual(np.stack(positions).shape, (4, 2, 8))
         self.assertTrue(report["mean_branch_reference_check"]["passed"])
-        self.assertLess(report["per_position_decomposition_max_abs_error_per_clip"], 1e-3)
-        self.assertEqual(report["clips_checked"], 8)
+        self.assertLess(report["decomposition"]["per_clip_max_abs_error"], 1e-4)
+        self.assertEqual(report["decomposition"]["clips_checked"], 8)
+        self.assertEqual(report["decomposition"]["precision"], "float32")
         # Pooling every clip-position at once equals the within-clip mean.
         self.assertLess(report["pooled_versus_within_clip_mean_max_abs_error"], 1e-6)
         self.assertIn("max-mean", report["bootstrap"]["deltas"])
 
-    def test_decomposition_holds_under_cuda_amp_where_the_screen_actually_runs(self):
-        """The identity is exact in real arithmetic; autocast is where it could fail."""
+    def test_linear_orderings_agree_on_one_identical_post_tcn_tensor(self):
+        """Separates precision from a bug: same tensor, same precision, two orderings."""
+        import torch
+        from scripts.e4_mechanism_checks import linear_path_equivalence
+        model, head = self.pieces()
+        sequences = [torch.randn(3, 8, 512) for _ in range(2)]
+        gaps = linear_path_equivalence(sequences, model, head, torch.device("cpu"), 2,
+                                       "float32")
+        self.assertEqual(gaps.size, 6)
+        self.assertLess(float(gaps.max()), 1e-5)
+
+    def test_float32_screen_is_tight_where_autocast_is_not(self):
+        """Regression for the first remote run, which tripped a tolerance set for fp32.
+
+        The two paths are the same computation, so float32 agrees to rounding.
+        Under autocast they can differ by far more, because a single fp16 step
+        at this model's logit magnitude is already 1e-2. That is a property of
+        the arithmetic, not of the checkpoint, which is why the screen runs in
+        float32 and only the reference check uses autocast.
+        """
         import torch
         from scripts.e4_mechanism_checks import per_position_anomalies
         if not torch.cuda.is_available():
@@ -514,13 +533,27 @@ class MechanismCheckTests(unittest.TestCase):
         device = torch.device("cuda")
         model, head = self.pieces()
         model, head = model.to(device), head.to(device)
-        sequences = [torch.randn(4, 8, 512) for _ in range(3)]
-        positions, _, clip_logits = per_position_anomalies(sequences, model, head, device, 2)
-        error = max(float(np.max(np.abs(item.mean(axis=1) - logits)))
-                    for item, logits in zip(positions, clip_logits))
-        # Looser than the CPU bound: fp16 accumulation over 512 channels is not
-        # exact. The script's default tolerance is 1e-3 for the same reason.
-        self.assertLess(error, 1e-3)
+        sequences = [torch.randn(8, 32, 512).half() for _ in range(16)]
+        # Calibrate the head to the logit scale of the real run (clip scores
+        # with a standard deviation near 2.15 and a reach past 10), because the
+        # gap scales with it -- that is precisely what the first remote run
+        # exposed and what a small-magnitude test cannot see.
+        with torch.no_grad():
+            probe = head(model.aggregator(model.tcn_sequence(
+                sequences[0].float().to(device))))
+            head.out.weight *= 2.15 / float(probe.std())
+
+        def worst(precision):
+            positions, _, clip_logits = per_position_anomalies(
+                sequences, model, head, device, 4, precision)
+            return max(float(np.max(np.abs(item.mean(axis=1) - logits)))
+                       for item, logits in zip(positions, clip_logits))
+
+        float32_error, amp_error = worst("float32"), worst("amp")
+        self.assertLess(float32_error, 1e-4)
+        # The incident: at this magnitude autocast alone exceeds the old gate.
+        self.assertGreater(amp_error, 1e-3)
+        self.assertGreater(amp_error, 100 * float32_error)
 
     def test_position_screen_rejects_a_broken_decomposition(self):
         import torch
@@ -530,7 +563,7 @@ class MechanismCheckTests(unittest.TestCase):
         sequences = [torch.randn(2, 8, 512) for _ in range(2)]
         metadata = [{"video_id": "v{}".format(index), "label_real": index,
                      "identity": "id{}".format(index)} for index in range(2)]
-        with self.assertRaisesRegex(ValueError, "decomposition does not hold"):
+        with self.assertRaisesRegex(ValueError, "not rounding"):
             position_screen(sequences, metadata, model, head, device, 2,
                             None, 1e-4, -1.0, 5, 42)
 
