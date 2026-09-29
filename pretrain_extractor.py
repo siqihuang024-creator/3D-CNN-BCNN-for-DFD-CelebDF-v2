@@ -59,6 +59,10 @@ def main():
     parser.add_argument("--experiment", default=None,
                         help="Entry from configs/v2/experiment_matrix.yaml, e.g. E3 or E4_attention.")
     parser.add_argument("--matrix", default=str(ROOT / "configs" / "v2" / "experiment_matrix.yaml"))
+    parser.add_argument("--profile-input-pipeline", action="store_true",
+                        help="Record per-epoch loader-wait versus compute time. Adds a CUDA "
+                             "sync per step, so use it for the feasibility run, not for a "
+                             "result that will be reported.")
     parser.add_argument("--dataset-root", action="append", default=None, metavar="NAME=PATH")
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -207,7 +211,18 @@ def main():
         skipped_training_paths = []
         progress = tqdm(train_loader, desc="Phase A {}/{}".format(epoch, epochs))
         last_step = -1
+        # Optional, off by default: how much of the epoch is spent waiting for
+        # the loader rather than computing. This is the number that decides
+        # whether a smaller input would buy anything -- a run that is starved
+        # of data gets nothing from fewer pixels or a cheaper conv1, and FLOPs
+        # cannot answer the question. It costs a CUDA sync per step, so it is
+        # only for the feasibility run.
+        data_wait, compute_time = 0.0, 0.0
+        marker = time.time()
         for step, batch in enumerate(progress):
+            if args.profile_input_pipeline:
+                data_wait += time.time() - marker
+                marker = time.time()
             if args.smoke_test is not None and step >= args.smoke_test:
                 break
             last_step = step
@@ -233,6 +248,11 @@ def main():
             running += float(loss.detach()) * accumulation * targets.numel()
             seen += targets.numel()
             progress.set_postfix(bce="{:.4f}".format(running / max(1, seen)))
+            if args.profile_input_pipeline:
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                compute_time += time.time() - marker
+                marker = time.time()
         if last_step >= 0 and (last_step + 1) % accumulation:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(parameters, clip_norm)
@@ -241,6 +261,11 @@ def main():
             scaler.update()
             optimizer_updates += int(scaler.get_scale() >= scale_before)
             optimizer.zero_grad(set_to_none=True)
+        # Split the epoch here. Projecting a 60-epoch cost from a two-epoch run
+        # needs the training and validation halves separately: they scale with
+        # different things -- clips per epoch against validation videos -- and
+        # a throughput computed over their sum belongs to neither.
+        train_seconds = time.time() - started
         scored = score_deterministic(
             extractor, head, val_loader, device,
             clip_chunk_size=int(config["data"].get("eval_clip_chunk_size", 4)),
@@ -269,6 +294,20 @@ def main():
                "learning_rate": epoch_lr,
                "selection_metric": "auroc", "selection_value": metrics["auroc"],
                "epoch_duration_seconds": duration,
+               "train_seconds": train_seconds,
+               "validation_seconds": duration - train_seconds,
+               "train_clips_per_second": (seen / train_seconds) if train_seconds else None,
+               "input_pipeline": ({"data_wait_seconds": data_wait,
+                                   "compute_seconds": compute_time,
+                                   "data_wait_fraction": data_wait / max(1e-9, data_wait + compute_time),
+                                   "scope": ("training loop only; the fraction is of "
+                                             "train_seconds, not of epoch_duration_seconds, "
+                                             "which also contains validation"),
+                                   "reading": ("data_wait_fraction near 1 means the loader is the "
+                                               "bottleneck, where fewer pixels help little and more "
+                                               "workers help; near 0 means compute, where the input "
+                                               "scale is the lever")}
+                                  if args.profile_input_pipeline else None),
                "peak_vram_bytes": (torch.cuda.max_memory_allocated(device)
                                     if device.type == "cuda" else 0),
                "validation": metrics, "diagnostics": diagnostics}

@@ -787,6 +787,21 @@ class MechanismCheckTests(unittest.TestCase):
                     checks.main()
 
 
+class InputPipelineProfileTests(unittest.TestCase):
+    def test_profiling_is_opt_in_and_absent_by_default(self):
+        """A CUDA sync per step must never land in a run that will be reported."""
+        import pretrain_extractor as training
+        parser = training.build_parser() if hasattr(training, "build_parser") else None
+        if parser is None:
+            source = (ROOT / "pretrain_extractor.py").read_text(encoding="utf-8")
+            self.assertIn("--profile-input-pipeline", source)
+            self.assertIn('action="store_true"', source)
+            # The sync and the accounting are both behind the flag.
+            self.assertIn("if args.profile_input_pipeline:", source)
+            self.assertIn("torch.cuda.synchronize(device)", source)
+            self.assertIn("data_wait_fraction", source)
+
+
 class VramProbeTests(unittest.TestCase):
     def test_frame_size_follows_the_preprocessing_path(self):
         from vram_probe import frame_size

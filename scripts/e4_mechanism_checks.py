@@ -13,9 +13,14 @@ A. score agreement. Are the per-video scores themselves unchanged, or do they
 
 B. temporal tap norms. A kernel whose centre tap dominates behaves almost like
    a pointwise map, which would explain A without appealing to the data at all.
-   This is circumstantial in both directions: equal tap norms do not show the
-   taps are used, and a dominant centre tap is not proof of a 1x1 equivalence,
-   because the residual path and the normalisation also shape the output.
+   This is circumstantial in both directions. A dominant centre tap is not
+   proof of a 1x1 equivalence, because the residual path and the normalisation
+   also shape the output. And equal tap norms say only that the neighbouring
+   taps contribute terms of comparable size: ||W_L|| = ||W_C|| does not make
+   W_L = W_C, the two can point anywhere relative to each other, and neither
+   norm says whether the mixing carries class information. What the measurement
+   can rule out is a trivial pointwise degeneration, and that is all it should
+   be asked to do.
 
 C. per-position aggregation screen. With a GAP aggregator and a single linear
    classifier the clip logit is exactly the mean of the per-position logits,
@@ -152,7 +157,12 @@ def score_agreement(path, reference=None, atol=1e-4):
                           "close to permutation invariant. A visibly lower correlation "
                           "with unchanged AUROC means order moves the score but not the "
                           "real/fake ranking, which is the more interesting outcome and "
-                          "forbids writing that the TCN ignores order.")}
+                          "forbids writing that the TCN ignores order. The per-class rows "
+                          "compare the SIZE of the perturbation between real and fake "
+                          "videos and nothing else: equal MAE does not establish that the "
+                          "two classes move together or in the same direction, only that "
+                          "they move by a similar amount, and a class-dependent shift "
+                          "that leaves the ranking intact would look the same here.")}
     for name, values in scores.items():
         if name == "ordered":
             continue
@@ -218,9 +228,13 @@ def tap_norm_report(checkpoint_state, config):
     return {"trained": trained, "fresh_initialisation": reference,
             "reading": ("A centre share far above the uniform value is consistent with "
                         "the block behaving almost pointwise, which would explain an "
-                        "order-insensitive score. It is circumstantial: equal shares do "
-                        "not show the neighbouring taps are used, and a dominant centre "
-                        "tap is not a proof of equivalence to a 1x1 convolution.")}
+                        "order-insensitive score. A share near the uniform value rules "
+                        "that degeneration out and nothing more: equal Frobenius norms "
+                        "mean the neighbouring taps contribute terms of comparable size, "
+                        "not that they learned comparable things -- ||W_L|| = ||W_C|| "
+                        "does not make W_L = W_C -- and no norm says whether the mixing "
+                        "carries class information. Report it as 'no centre-tap "
+                        "dominance', never as evidence of effective temporal dynamics.")}
 
 
 # --------------------------------------------------------------------------- C

@@ -1,28 +1,50 @@
-# E4 follow-up protocol (2026-09-26)
+# E4 follow-up protocol (updated 2026-09-29)
 
-## Interpretation and order
+## What is settled, and what runs next
 
-Keep E2/E3/E4 seed42, 60-epoch results as the fixed-budget comparison.
-E4 improves over E3 in the identity-paired analysis but does not demonstrate
-superiority or equivalence to E2. A single training seed is not a replication.
-Do not attribute the improvement to order before the controls below.
+Keep E2/E3/E4 seed42, 60-epoch results as the fixed-budget comparison. A single
+training seed is not a replication.
 
-1. Pre-TCN order control: cache the unchanged trunk sequences once; evaluate
-   ordered, ten reproducible shuffles, reversed, non-identity block4/8/16, and
-   TCN bypass with the same checkpoint and classifier.
-2. Raw-frame shuffle of E2/E3/E4: auxiliary whole-model diagnostic, not a
+Settled on CelebDFv3, from the order control and the three mechanism checks:
+
+- The TCN restores what the 512-d compression cost and does not improve on the
+  uncompressed baseline: E2 0.8058, E3 0.7819, E4 0.8064, so E4-E3 = +0.0245
+  while E4-E2 = +0.0006. Do not quote the first figure without the second.
+- Shuffling, reversing and block-shuffling the pre-TCN sequence move individual
+  video scores substantially (Pearson 0.9976, MAE 13% of the score standard
+  deviation, about 200x the numerical noise floor) and do not move AUROC. The
+  representation responds to order; the response is not discriminative.
+- No centre-tap dominance: shares 0.333/0.334 against a uniform 0.333. That
+  rules out a trivial pointwise degeneration and nothing more.
+- Per-position aggregation inside a clip: mean 0.8064 beats max 0.7951 and top2
+  0.7974 with intervals excluding zero. No evidence that the cues are
+  concentrated in a few temporal positions.
+
+Order of work from here. This list is the current one; earlier drafts of this
+file led with the raw-frame shuffle and E4_long, and that order is superseded.
+
+1. Print the real/fake split of the shuffle agreement from the existing JSON.
+   Seconds, no GPU, and it closes the CelebDFv3 mechanism phase.
+2. DFD feasibility profiling: GPU, whether physical batch 8 fits, peak VRAM,
+   train seconds per epoch separately from validation, and the loader wait
+   fraction. One to two epochs, no long run. See Phase 2.
+3. DFD main chain under one fixed protocol: E2-DFD, pool screen, E3-DFD,
+   E4-DFD, then the same pre-TCN order control on E4-DFD.
+4. E4-prime on CelebDFv3, reduced by agreement to attention and flatten, the
+   two that ask different questions from GAP (content-adaptive weighting, and
+   explicitly position-preserving). Flatten is Linear(32x512, 512), 8.39M
+   parameters against GAP's zero, so it is a stress test biased against the
+   null: losing is strong evidence, winning is confounded with capacity and
+   would need flatten64 to attribute. Implemented choices are
+   gap/max/attention/cls/flatten/flatten64; top-k is NOT implemented and should
+   not be listed as an available CLI option. Max is not scheduled: the
+   post-hoc screen gives no reason to spend the training budget on it, which is
+   a statement about this checkpoint and this screen, not a proof that a model
+   trained with max pooling from the start would be worse.
+5. Raw-frame shuffle of E2/E3/E4: auxiliary whole-model diagnostic, not a
    TCN-only intervention. Run sequentially on one GPU.
-3. E4_long: independent 90-epoch run in a NEW directory, not exact continuation.
-4. E4-prime aggregation: logically independent of order sensitivity. Reduced
-   by agreement to attention and flatten, the two that ask different questions
-   from GAP (content-adaptive weighting, and explicitly position-preserving).
-   Flatten is Linear(32x512, 512), 8.39M parameters against GAP's zero, so it
-   is a stress test biased against the null: losing is strong evidence, winning
-   is confounded with capacity and would need flatten64 to attribute.
-   Implemented choices are gap/max/attention/cls/flatten/flatten64; top-k is
-   NOT implemented and should not be listed as an available CLI option.
-5. DFD, raised in priority: the order-control null is only established on
-   CelebDFv3 and may be a property of that dataset. See Phase 2 below.
+6. E4_long: independent 90-epoch run in a NEW directory, not a continuation.
+   Convergence and fixed-budget fairness appendix, not a temporal experiment.
 
 Corrections to the discussion:
 
@@ -211,9 +233,22 @@ a different input scale is not comparable with the others.
 
 Activation checkpointing is expected not to help, because the largest single
 tensor is the gradient of conv1's output, which backward needs whatever the
-forward did, and recomputation reproduces it rather than avoiding it. That is
-an analysis of where the memory goes, not a measurement; if the probe shows
-batch 8 just missing at step 2, it is worth testing before being dismissed.
+forward did, and recomputation reproduces it rather than avoiding it -- for
+conv1 it should make the peak worse, by materialising that output again at the
+moment its gradient is alive. An earlier version of this plan proposed
+checkpointing stage 1. That proposal is withdrawn and should not be
+reintroduced without a measurement showing the peak actually falls. It remains
+an analysis of where the memory goes rather than a measurement, so if the probe
+shows batch 8 only just missing at step 2, test it before dismissing it.
+
+Resizing the whole frame to 256x256 while keeping whole-frame mode is not an
+open option either. That is the letterbox path, and it is the configuration
+that failed: cv2's INTER_AREA is a low-pass filter and averaged 4.6 input
+pixels into each output pixel on the DFD run that failed, while manipulation
+traces are high frequency, so the resize discarded the evidence before conv1
+saw it (the comment in src/video_bcnn/data.py records this). Decimation is the
+fix precisely because it slices rather than filters, which is why a larger
+decimate_step stays inside that rationale and a resize does not.
 
 ```bash
 python -u vram_probe.py --config configs/v2/phase_a_dfd.yaml \
@@ -235,12 +270,18 @@ python -u scripts/benchmark_loader.py --config configs/v2/phase_a_dfd.yaml \
   --manifest artifacts/manifests/combined_manifest_p05.csv
 python -u pretrain_extractor.py --config configs/v2/phase_a_dfd.yaml \
   --manifest artifacts/manifests/combined_manifest_p05.csv \
-  --experiment E2_dfd --seed 42 --max-epochs 2 --run-suffix timing
+  --experiment E2_dfd --seed 42 --max-epochs 2 --run-suffix timing \
+  --profile-input-pipeline
 ```
 
-Watch nvidia-smi during the second command. High utilisation means compute and
-the input lever applies; low utilisation with busy CPUs means decoding, where
-smaller frames still help but conv1 stride would not.
+Every epoch already records epoch_duration_seconds, peak_vram_bytes and the GPU
+name. --profile-input-pipeline adds the one that was missing:
+input_pipeline.data_wait_fraction, the share of the epoch spent waiting for the
+loader rather than computing. That is what decides the strategy, and FLOPs
+cannot answer it -- a run starved of data gains nothing from fewer pixels. Near
+one means decoding is the bottleneck and the answer is workers, not a smaller
+frame; near zero means compute, and the input scale is the lever. It costs a
+CUDA sync per step, so it stays off for any run that will be reported.
 
 DFD chain once the timing is known: E2-DFD, then the pooling screen S (it needs
 a DFD-trained mean-head checkpoint and there is none yet, so E2 cannot be
