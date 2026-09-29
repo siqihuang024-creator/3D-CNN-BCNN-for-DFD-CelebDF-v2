@@ -787,6 +787,233 @@ class MechanismCheckTests(unittest.TestCase):
                     checks.main()
 
 
+class ShuffleSensitivityAuditTests(unittest.TestCase):
+    """The audit must not turn a score-level effect into a class effect."""
+
+    @staticmethod
+    def score_only_effect(reals=134, fakes=8071, seed=0):
+        """No class effect whatever: the perturbation is a function of the score.
+
+        The classes sit at different score levels, exactly as they do in the
+        real E4 export, so an audit that fails to condition properly reports an
+        asymmetry that is not there.
+        """
+        rng = np.random.default_rng(seed)
+        ordered = np.concatenate([rng.normal(-1.78, 2.36, reals),
+                                  rng.normal(0.82, 2.01, fakes)])
+        labels = np.concatenate([np.ones(reals, dtype=int), np.zeros(fakes, dtype=int)])
+        perturbation = 0.10 + 0.04 * (ordered - ordered.min())
+        return ordered, perturbation, labels
+
+    @staticmethod
+    def write(path, ordered, perturbation, labels):
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["video_id", "label_real", "identity", "ordered",
+                             "shuffled_0", "shuffled_1"])
+            for index, (score, label, step) in enumerate(
+                    zip(ordered, labels, perturbation)):
+                writer.writerow(["v%d" % index, int(label), "id%d" % (index % 94),
+                                 score, score + step, score - step])
+        return path
+
+    def test_averages_every_shuffle_seed_not_one_permutation(self):
+        from scripts.shuffle_sensitivity_audit import read_scores
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "c.csv"
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["video_id", "label_real", "identity", "ordered",
+                                 "shuffled_0", "shuffled_1"])
+                # One seed moves by 1.0, the other by 0.0; the mean is 0.5.
+                writer.writerow(["v0", 1, "a", 2.0, 3.0, 2.0])
+                writer.writerow(["v1", 0, "b", 1.0, 1.0, 0.0])
+            _, perturbation, _, _, shuffles = read_scores(path)
+            self.assertEqual(shuffles, ["shuffled_0", "shuffled_1"])
+            np.testing.assert_allclose(perturbation, [0.5, 0.5])
+
+    def test_normalisation_uses_each_class_own_spread(self):
+        from scripts.shuffle_sensitivity_audit import per_class
+        ordered = np.asarray([0., 4., 1., 3.])          # real spread 2, fake spread 1
+        summary = per_class(ordered, np.ones(4), np.asarray([1, 1, 0, 0]))
+        self.assertAlmostEqual(summary["fake_over_real_raw"], 1.0)
+        # Equal absolute movement on a narrower class is the larger relative one.
+        self.assertAlmostEqual(summary["fake_over_real_normalised"], 2.0)
+
+    def test_uncontrolled_ratio_is_misleading_on_a_pure_score_effect(self):
+        """The thing the rest of the script exists to correct."""
+        from scripts.shuffle_sensitivity_audit import per_class
+        ordered, perturbation, labels = self.score_only_effect()
+        summary = per_class(ordered, perturbation, labels)
+        self.assertGreater(summary["fake_over_real_raw"], 1.2)
+        self.assertIn("Uncontrolled", summary["caveat"])
+
+    def test_matching_removes_a_pure_score_effect(self):
+        from scripts.shuffle_sensitivity_audit import matched_comparison
+        ordered, perturbation, labels = self.score_only_effect()
+        matched = matched_comparison(ordered, perturbation, labels,
+                                     0.05 * ordered.std(), 3)
+        self.assertTrue(matched["determinable"])
+        # Nearly every real finds partners, and both statistics land on the null.
+        self.assertGreater(matched["matched_fraction_of_reals"], 0.9)
+        self.assertAlmostEqual(matched["fake_over_real"], 1.0, places=2)
+        self.assertAlmostEqual(matched["matched_auroc"], 0.5, delta=0.05)
+
+    def test_matching_still_finds_a_real_class_effect(self):
+        """The correction must not be so strong that it erases a true signal."""
+        from scripts.shuffle_sensitivity_audit import matched_comparison
+        ordered, perturbation, labels = self.score_only_effect()
+        perturbation = perturbation * np.where(labels == 0, 1.5, 1.0)
+        matched = matched_comparison(ordered, perturbation, labels,
+                                     0.05 * ordered.std(), 3)
+        self.assertAlmostEqual(matched["fake_over_real"], 1.5, delta=0.05)
+        self.assertGreater(matched["matched_auroc"], 0.9)
+
+    def test_binning_restricts_the_comparison_to_the_shared_range(self):
+        from scripts.shuffle_sensitivity_audit import shared_range_bins
+        # Reals at the bottom, fakes at the top, intersecting only in the middle.
+        ordered = np.concatenate([np.linspace(-2.0, -0.1, 100),
+                                  np.linspace(-0.2, 2.0, 100)])
+        labels = np.concatenate([np.ones(100, dtype=int), np.zeros(100, dtype=int)])
+        for _, _, inside, shared, (low, high) in shared_range_bins(
+                ordered, labels, 1, 5):
+            self.assertLess(shared.size, inside.size)
+            np.testing.assert_array_less(low - 1e-9, ordered[shared])
+            np.testing.assert_array_less(ordered[shared], high + 1e-9)
+
+    def test_bin_straddling_the_gap_is_not_comparable(self):
+        from scripts.shuffle_sensitivity_audit import conditioned_statistics
+        ordered = np.concatenate([np.linspace(-4, -3, 100), np.linspace(3, 4, 100)])
+        labels = np.concatenate([np.ones(100, dtype=int), np.zeros(100, dtype=int)])
+        report = conditioned_statistics(ordered, np.ones(200), labels, 5, 10)
+        straddling = [row for row in report["bins"]
+                      if row["real_in_bin"] >= 10 and row["fake_in_bin"] >= 10]
+        self.assertTrue(straddling)
+        self.assertFalse(any(row["comparable"] for row in straddling))
+        self.assertEqual(report["comparable_bins"], 0)
+        self.assertEqual(report["comparable_coverage"], 0.0)
+        self.assertFalse(report["determinable"])
+        self.assertIsNone(report["fake_over_real_conditioned"])
+
+    def test_point_estimate_and_interval_use_the_same_statistic(self):
+        from scripts.shuffle_sensitivity_audit import cluster_intervals, matched_comparison
+        ordered, perturbation, labels = self.score_only_effect(reals=60, fakes=600)
+        clusters = np.asarray(["id%d" % (index % 30) for index in range(len(labels))])
+        caliper = 0.05 * ordered.std()
+        point = matched_comparison(ordered, perturbation, labels, caliper, 3)
+        intervals = cluster_intervals(ordered, perturbation, labels, clusters,
+                                      10, 10, caliper, 3, 200, 42)
+        matched = intervals["matched_fake_over_real"]
+        self.assertTrue(matched["determinable"])
+        # The interval has to bracket the estimate it is an interval for.
+        self.assertLessEqual(matched["low"], point["fake_over_real"])
+        self.assertGreaterEqual(matched["high"], point["fake_over_real"])
+
+    def test_interval_is_undetermined_when_no_resample_is_usable(self):
+        from scripts.shuffle_sensitivity_audit import cluster_intervals
+        # Classes far apart: nothing matches at any sane caliper.
+        ordered = np.concatenate([np.full(40, -50.0), np.full(40, 50.0)])
+        labels = np.concatenate([np.ones(40, dtype=int), np.zeros(40, dtype=int)])
+        clusters = np.asarray(["id%d" % (index % 8) for index in range(80)])
+        intervals = cluster_intervals(ordered, np.ones(80), labels, clusters,
+                                      5, 10, 0.1, 3, 50, 42)
+        self.assertEqual(intervals["matched_fake_over_real"]["draws"], 0)
+        self.assertFalse(intervals["matched_fake_over_real"]["determinable"])
+
+    def test_verdict_calls_a_pure_score_effect_correctly(self):
+        from unittest.mock import patch
+        from scripts import shuffle_sensitivity_audit as audit
+        ordered, perturbation, labels = self.score_only_effect()
+        with tempfile.TemporaryDirectory() as directory:
+            scores = self.write(Path(directory) / "c.csv", ordered, perturbation, labels)
+            output = Path(directory) / "audit.json"
+            args = ["audit", "--scores", str(scores), "--draws", "200",
+                    "--output", str(output)]
+            with patch.object(sys, "argv", args):
+                self.assertEqual(audit.main(), 0)
+            report = json.loads(output.read_text(encoding="utf-8"))
+        self.assertIn("no class difference detected", report["verdict"])
+        self.assertFalse(report["bootstrap"]["matched_fake_over_real"]["excludes_null"])
+        self.assertGreater(report["per_class"]["fake_over_real_raw"], 1.2)
+
+    def test_verdict_calls_a_real_class_effect_correctly(self):
+        from unittest.mock import patch
+        from scripts import shuffle_sensitivity_audit as audit
+        ordered, perturbation, labels = self.score_only_effect()
+        perturbation = perturbation * np.where(labels == 0, 1.5, 1.0)
+        with tempfile.TemporaryDirectory() as directory:
+            scores = self.write(Path(directory) / "c.csv", ordered, perturbation, labels)
+            output = Path(directory) / "audit.json"
+            args = ["audit", "--scores", str(scores), "--draws", "200",
+                    "--output", str(output)]
+            with patch.object(sys, "argv", args):
+                self.assertEqual(audit.main(), 0)
+            report = json.loads(output.read_text(encoding="utf-8"))
+        self.assertIn("class effect", report["verdict"])
+        self.assertTrue(report["bootstrap"]["matched_fake_over_real"]["excludes_null"])
+
+    @staticmethod
+    def intervals(ratio_low, ratio_high, auroc_low, auroc_high):
+        def one(low, high, null):
+            return {"draws": 100, "determinable": True, "mean": (low + high) / 2,
+                    "low": low, "high": high,
+                    "excludes_null": bool(low > null or high < null)}
+        return {"matched_fake_over_real": one(ratio_low, ratio_high, 1.0),
+                "matched_auroc": one(auroc_low, auroc_high, 0.5)}
+
+    def test_verdict_reads_the_direction_not_just_exclusion(self):
+        """An interval can exclude its null from either side."""
+        from scripts.shuffle_sensitivity_audit import verdict
+        determinable = {"determinable": True}
+        fakes = verdict(determinable, self.intervals(1.20, 1.45, 0.58, 0.66))
+        self.assertIn("fakes move more", fakes)
+        # Both intervals sit below their nulls: reals move more, not fakes.
+        reals = verdict(determinable, self.intervals(0.60, 0.72, 0.20, 0.31))
+        self.assertIn("reals move more", reals)
+        self.assertNotIn("fakes move more", reals)
+
+    def test_verdict_does_not_turn_a_null_result_into_equivalence(self):
+        """Not detecting a difference is not proving the score explained it."""
+        from scripts.shuffle_sensitivity_audit import verdict
+        sentence = verdict({"determinable": True},
+                           self.intervals(0.80, 1.40, 0.42, 0.61))
+        self.assertIn("no class difference detected", sentence)
+        self.assertNotIn("score-level effect", sentence)
+        self.assertIn("does not establish", sentence)
+        # The bounds have to survive into the sentence so that what is still
+        # compatible with the data stays visible.
+        self.assertIn("1.400", sentence)
+        self.assertIn("0.610", sentence)
+
+    def test_verdict_refuses_to_call_disagreeing_statistics(self):
+        from scripts.shuffle_sensitivity_audit import verdict
+        sentence = verdict({"determinable": True},
+                           self.intervals(1.20, 1.45, 0.42, 0.61))
+        self.assertIn("mixed", sentence)
+
+    def test_verdict_needs_both_intervals_to_be_determinable(self):
+        from scripts.shuffle_sensitivity_audit import verdict
+        broken = self.intervals(1.20, 1.45, 0.58, 0.66)
+        broken["matched_auroc"]["determinable"] = False
+        self.assertIn("undetermined", verdict({"determinable": True}, broken))
+
+    def test_main_rejects_a_csv_from_another_run(self):
+        from unittest.mock import patch
+        from scripts import shuffle_sensitivity_audit as audit
+        ordered, perturbation, labels = self.score_only_effect(reals=20, fakes=60)
+        with tempfile.TemporaryDirectory() as directory:
+            scores = self.write(Path(directory) / "c.csv", ordered, perturbation, labels)
+            reference = Path(directory) / "other.csv"
+            reference.write_text(
+                "\n".join(["video_id,label_real,video_score", "v0,1,99.0", ""]),
+                encoding="utf-8")
+            args = ["audit", "--scores", str(scores), "--reference-scores",
+                    str(reference), "--output", str(Path(directory) / "out.json")]
+            with patch.object(sys, "argv", args):
+                with self.assertRaises(ValueError):
+                    audit.main()
+
+
 class InputPipelineProfileTests(unittest.TestCase):
     def test_profiling_is_opt_in_and_absent_by_default(self):
         """A CUDA sync per step must never land in a run that will be reported."""
