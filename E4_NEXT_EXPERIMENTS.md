@@ -19,18 +19,42 @@ Settled on CelebDFv3, from the order control and the three mechanism checks:
 - Per-position aggregation inside a clip: mean 0.8064 beats max 0.7951 and top2
   0.7974 with intervals excluding zero. No evidence that the cues are
   concentrated in a few temporal positions.
+- The apparent class asymmetry in shuffle sensitivity was substantially
+  attenuated after score matching: +62.7% uncontrolled (normalised 1.627)
+  against +4.8% at matched scores (1.048, 95% CI 0.895 to 1.183), with the
+  matched AUROC at 0.534 (0.450 to 0.594). No reliable class difference was
+  detected once the score level was controlled. That is attenuation, not
+  elimination -- the interval still admits about 18%, so this does not
+  establish that the raw asymmetry was entirely a score-level effect. The
+  headline figure of an earlier run, 2.374, came from a mean of per-real ratios
+  and is a property of that estimator rather than of the data. The corrected
+  run is results/v2/E4_shuffle_sensitivity_audit_v2.json.
 
-Order of work from here. This list is the current one; earlier drafts of this
-file led with the raw-frame shuffle and E4_long, and that order is superseded.
+  TODO on the remote, not yet done: rename the superseded report so its
+  filename says so, because 2.374 is the number a reader would otherwise lift
+  out of it months from now.
 
-1. Print the real/fake split of the shuffle agreement from the existing JSON.
-   Seconds, no GPU, and it closes the CelebDFv3 mechanism phase.
-2. DFD feasibility profiling: GPU, whether physical batch 8 fits, peak VRAM,
+      mv results/v2/E4_shuffle_sensitivity_audit.json \
+         results/v2/E4_shuffle_sensitivity_audit_SUPERSEDED_biased_estimator.json
+
+With that, the CelebDFv3 E4 phase is closed by agreement. No further
+CelebDF-side diagnostics are to be added before the DFD work below, whatever
+this last result had shown.
+
+Already done, kept here only so the record reads in order: the pre-TCN order
+control, the three mechanism checks, and the score-matched sensitivity audit
+including its real/fake split. Their commands are in the sections below, which
+are history rather than instructions.
+
+Order of work from here, starting at 1. Earlier drafts of this file led with
+the raw-frame shuffle and E4_long, and that order is superseded.
+
+1. DFD feasibility profiling: GPU, whether physical batch 8 fits, peak VRAM,
    train seconds per epoch separately from validation, and the loader wait
    fraction. One to two epochs, no long run. See Phase 2.
-3. DFD main chain under one fixed protocol: E2-DFD, pool screen, E3-DFD,
+2. DFD main chain under one fixed protocol: E2-DFD, pool screen, E3-DFD,
    E4-DFD, then the same pre-TCN order control on E4-DFD.
-4. E4-prime on CelebDFv3, reduced by agreement to attention and flatten, the
+3. E4-prime on CelebDFv3, reduced by agreement to attention and flatten, the
    two that ask different questions from GAP (content-adaptive weighting, and
    explicitly position-preserving). Flatten is Linear(32x512, 512), 8.39M
    parameters against GAP's zero, so it is a stress test biased against the
@@ -41,9 +65,9 @@ file led with the raw-frame shuffle and E4_long, and that order is superseded.
    post-hoc screen gives no reason to spend the training budget on it, which is
    a statement about this checkpoint and this screen, not a proof that a model
    trained with max pooling from the start would be worse.
-5. Raw-frame shuffle of E2/E3/E4: auxiliary whole-model diagnostic, not a
+4. Raw-frame shuffle of E2/E3/E4: auxiliary whole-model diagnostic, not a
    TCN-only intervention. Run sequentially on one GPU.
-6. E4_long: independent 90-epoch run in a NEW directory, not a continuation.
+5. E4_long: independent 90-epoch run in a NEW directory, not a continuation.
    Convergence and fixed-budget fairness appendix, not a temporal experiment.
 
 Corrections to the discussion:
@@ -63,7 +87,12 @@ Corrections to the discussion:
 - The frozen nine-method shortcut-weak subset remains a sensitivity analysis,
   not an independent shortcut-free test set.
 
-## Remote first experiment (bash, py312 environment)
+## History: the CelebDFv3 order control (completed, kept for reproduction)
+
+This section and the Phase 1 mechanism checks below it record work that is
+finished; the raw-frame control between them has not been run and is item 4.
+They are here so the finished runs can be reproduced, not as the next thing to
+launch -- the current first step is Phase 2, DFD feasibility profiling.
 
 After pushing the reviewed code and pulling it on the server:
 
@@ -106,7 +135,7 @@ mechanism checks below reuse this trunk pass instead of repeating it;
 without the flag the cache is RAM-only. Inference
 preserves the AMP dtype and chunking rather than forcibly quantising to FP16.
 
-## Raw-frame auxiliary control
+## Raw-frame auxiliary control (item 4, not yet run)
 
 ```bash
 for E in e2 e3 e4; do
@@ -124,7 +153,7 @@ Use pipefail as above. Perturbed reports have distinct names and do not overwrit
 the ordered legacy val_scores.csv. Compare ordered and perturbed video CSVs
 with compare_experiments.py using identity-paired clustering.
 
-## Phase 1 mechanism checks (after the order control)
+## History: Phase 1 mechanism checks (completed, kept for reproduction)
 
 The order control settled that permuting the pre-TCN sequence does not move
 AUROC. It did not settle why, and three post-hoc checks separate the accounts
@@ -214,7 +243,7 @@ and selected under the mean protocol, not about the sparse-anomaly account in
 general -- training with max pooling could still find a different solution. If
 they rank better, that run becomes justified.
 
-## Phase 2 DFD feasibility (before any long DFD run)
+## Phase 2 DFD feasibility -- THE CURRENT FIRST STEP (before any long DFD run)
 
 DFD is 960x540 whole frames -- decimate mode never applies input_resize, so the
 256 in the config is a red herring -- which is 7.9 times the pixels of the
@@ -250,7 +279,17 @@ saw it (the comment in src/video_bcnn/data.py records this). Decimation is the
 fix precisely because it slices rather than filters, which is why a larger
 decimate_step stays inside that rationale and a resize does not.
 
+Source the environment first. The configs carry this machine's Windows dataset
+paths, and remote_env.sh is what replaces them with DFD_ROOT and
+CELEBDFV3_ROOT. The memory probe runs on synthetic tensors and would not
+notice, which is the trap: it would pass, and then the loader benchmark and the
+timing run would fail on paths that do not exist.
+
 ```bash
+cd /root/3D-CNN-BCNN-for-DFD-CelebDF-v2
+source remote_env.sh
+set -o pipefail
+
 python -u vram_probe.py --config configs/v2/phase_a_dfd.yaml \
   --variant e2 e3 e4 --batch-sizes 8 --decimate-steps 2 3 \
   --output artifacts/v2/vram_probe_dfd.json
@@ -263,7 +302,28 @@ precision peak. That is consistent with an input-bound loop rather than a
 compute-bound one, but it is indirect -- small kernels, Python overhead and
 normalisation all depress the same number -- so it is a hypothesis for the
 timing run to confirm, not a finding. Either way DFD's wall clock cannot be
-extrapolated from FLOPs and has to be measured:
+extrapolated from FLOPs and has to be measured.
+
+STOP HERE AND READ THE PROBE FIRST. The probe sweeps decimate_step 2 and 3, but
+the two commands below do not: neither benchmark_loader.py nor
+pretrain_extractor.py takes a decimate_step argument, so both read whatever
+configs/v2/phase_a_dfd.yaml says, which is 2. If batch 8 only fits at step 3,
+running them as written measures an input scale that will not be used, and the
+timing is then a projection for the wrong experiment.
+
+So if the probe selects step 3, edit the config before continuing:
+
+```yaml
+# configs/v2/phase_a_dfd.yaml
+data:
+  decimate_step: 3
+```
+
+There is deliberately no command-line override for it. The whole DFD chain --
+E2, the pool screen, E3, E4 and the order control -- has to share one input
+scale to be comparable, and a flag makes it easy for one run to diverge from
+the rest. Keeping it in the config means one edit, recorded in git, that every
+later command inherits.
 
 ```bash
 python -u scripts/benchmark_loader.py --config configs/v2/phase_a_dfd.yaml \
@@ -274,14 +334,23 @@ python -u pretrain_extractor.py --config configs/v2/phase_a_dfd.yaml \
   --profile-input-pipeline
 ```
 
-Every epoch already records epoch_duration_seconds, peak_vram_bytes and the GPU
-name. --profile-input-pipeline adds the one that was missing:
-input_pipeline.data_wait_fraction, the share of the epoch spent waiting for the
-loader rather than computing. That is what decides the strategy, and FLOPs
-cannot answer it -- a run starved of data gains nothing from fewer pixels. Near
-one means decoding is the bottleneck and the answer is workers, not a smaller
-frame; near zero means compute, and the input scale is the lever. It costs a
-CUDA sync per step, so it stays off for any run that will be reported.
+Every epoch already records epoch_duration_seconds, and now train_seconds and
+validation_seconds separately, alongside peak_vram_bytes and the GPU name.
+--profile-input-pipeline adds the one that was missing:
+input_pipeline.data_wait_fraction, the share of the TRAINING LOOP spent waiting
+for the loader rather than computing. Its denominator is data_wait plus
+compute, which is the training loop only -- validation is not in it, and it is
+not a fraction of epoch_duration_seconds. Project a 60-epoch cost from
+train_seconds and validation_seconds, and read the bottleneck from the
+fraction. That is what decides the strategy, and FLOPs cannot answer it: a run
+starved of data gains nothing from fewer pixels. Near zero means compute, and
+the input scale is the lever. Near one means the training loop is waiting on
+the input pipeline -- and that is as far as this number goes. Which part of the
+pipeline is responsible, decode or disk or the preprocessing around them, it
+does not say; pair it with benchmark_loader.py, whose worker sweep separates a
+pipeline that scales with workers from one that does not. Prescribing "add
+workers" from this fraction alone would be guessing. It costs a CUDA sync per
+step, so it stays off for any run that will be reported.
 
 DFD chain once the timing is known: E2-DFD, then the pooling screen S (it needs
 a DFD-trained mean-head checkpoint and there is none yet, so E2 cannot be
