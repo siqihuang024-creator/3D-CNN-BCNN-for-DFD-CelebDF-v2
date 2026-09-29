@@ -219,9 +219,22 @@ def matched_comparison(ordered, perturbation, labels, caliper, min_matches):
     134 reals, because it conditions on the score itself rather than on a
     bucket of it.
 
-    Every real is weighted equally, however many partners it found, so the
-    sample size of the statistic is the number of matched reals and the
-    identity bootstrap resamples the same unit.
+    The ratio is a ratio of means, not a mean of per-real ratios, and that
+    distinction cost a run. Dividing each real's own perturbation into its
+    partners' average puts a high-variance, right-skewed quantity in the
+    denominator while the numerator is an average over roughly 140 videos, and
+    the mismatch biases the result upward whatever the data say: on a
+    construction where both classes are drawn from the *same* skewed
+    distribution, the mean of per-real ratios reported 2.09 against a truth of
+    1.00, the geometric mean 1.41 and the median 1.40, while the ratio of means
+    gave 1.02 and the matched AUROC 0.51. Only the last two are usable, and
+    both still recover an injected 1.5x effect (1.35 and 0.62). The biased
+    figure is still reported, under a name that says so, because an earlier run
+    quoted it.
+
+    Every real is weighted equally in the AUROC, however many partners it
+    found, so the sample size of that statistic is the number of matched reals
+    and the identity bootstrap resamples the same unit.
     """
     real = np.flatnonzero(labels == 1)
     fake = np.flatnonzero(labels == 0)
@@ -229,36 +242,45 @@ def matched_comparison(ordered, perturbation, labels, caliper, min_matches):
         return {"determinable": False, "reason": "one class is absent"}
     order = np.argsort(ordered[fake])
     fake_sorted, scores_sorted = fake[order], ordered[fake][order]
-    ratios, win_rates, partners_used, gaps = [], [], [], []
+    partner_means, own, per_real_ratios = [], [], []
+    win_rates, partners_used, gaps = [], [], []
     for index in real:
         low = np.searchsorted(scores_sorted, ordered[index] - caliper, "left")
         high = np.searchsorted(scores_sorted, ordered[index] + caliper, "right")
         partners = fake_sorted[low:high]
         if partners.size < min_matches or perturbation[index] <= 0:
             continue
-        ratios.append(float(perturbation[partners].mean() / perturbation[index]))
+        partner_means.append(float(perturbation[partners].mean()))
+        own.append(float(perturbation[index]))
+        per_real_ratios.append(partner_means[-1] / own[-1])
         larger = float((perturbation[partners] > perturbation[index]).sum())
         tied = float((perturbation[partners] == perturbation[index]).sum())
         win_rates.append((larger + 0.5 * tied) / partners.size)
         partners_used.append(int(partners.size))
         gaps.append(float(np.abs(ordered[partners] - ordered[index]).mean()))
-    if not ratios:
+    if not own:
         return {"determinable": False,
                 "reason": "no real video found {} fakes within the caliper".format(
                     min_matches)}
     return {"determinable": True, "caliper": float(caliper),
             "min_matches": int(min_matches),
-            "matched_reals": len(ratios), "real_videos": int(real.size),
-            "matched_fraction_of_reals": float(len(ratios) / real.size),
+            "matched_reals": len(own), "real_videos": int(real.size),
+            "matched_fraction_of_reals": float(len(own) / real.size),
             "median_partners_per_real": float(np.median(partners_used)),
             "mean_abs_score_gap": float(np.mean(gaps)),
-            "fake_over_real": float(np.mean(ratios)),
+            "fake_over_real": float(np.mean(partner_means) / np.mean(own)),
+            "mean_paired_difference": float(np.mean(partner_means) - np.mean(own)),
+            "mean_of_per_real_ratios_biased": float(np.mean(per_real_ratios)),
             "matched_auroc": float(np.mean(win_rates)),
-            "reading": ("fake_over_real is the mean over matched reals of how much more "
-                        "their score-matched fakes move; matched_auroc is the mean "
-                        "probability that a matched fake moves more than its real. The "
-                        "nulls are 1 and 0.5. mean_abs_score_gap says how tight the "
-                        "matching actually was.")}
+            "reading": ("fake_over_real is a ratio of means: the matched fakes' mean "
+                        "perturbation over the matched reals' mean. matched_auroc is the "
+                        "mean probability that a matched fake moves more than its real. "
+                        "The nulls are 1 and 0.5, and mean_paired_difference says the "
+                        "same thing in score units with a null of 0. Ignore "
+                        "mean_of_per_real_ratios_biased: it divides by a single real's "
+                        "perturbation and reads about 2.1 even when the classes are "
+                        "drawn from one distribution. mean_abs_score_gap says how tight "
+                        "the matching actually was.")}
 
 
 def magnitude_discrimination(ordered, perturbation, labels, bins, minimum):
@@ -301,7 +323,7 @@ def cluster_intervals(ordered, perturbation, labels, clusters, bins, minimum,
     members = [np.flatnonzero(clusters == key) for key in sorted(set(clusters))]
     rng = np.random.default_rng(seed)
     ratios, aurocs, raw = [], [], []
-    matched_ratios, matched_aurocs = [], []
+    matched_ratios, matched_aurocs, matched_differences = [], [], []
     for _ in range(int(draws)):
         picked = np.concatenate([members[index] for index in
                                  rng.integers(len(members), size=len(members))])
@@ -315,6 +337,7 @@ def cluster_intervals(ordered, perturbation, labels, clusters, bins, minimum,
         if pairs["determinable"]:
             matched_ratios.append(pairs["fake_over_real"])
             matched_aurocs.append(pairs["matched_auroc"])
+            matched_differences.append(pairs["mean_paired_difference"])
         current = conditioned_statistics(drawn_scores, drawn, drawn_labels, bins, minimum)
         if not current["determinable"]:
             continue
@@ -333,6 +356,7 @@ def cluster_intervals(ordered, perturbation, labels, clusters, bins, minimum,
     return {"clusters": len(members), "draws_requested": int(draws),
             "matched_fake_over_real": interval(matched_ratios, 1.0, draws),
             "matched_auroc": interval(matched_aurocs, 0.5, draws),
+            "matched_difference": interval(matched_differences, 0.0, draws),
             "binned_fake_over_real": interval(ratios, 1.0, draws),
             "binned_magnitude_auroc": interval(aurocs, 0.5, draws),
             "unconditioned_magnitude_auroc": interval(raw, 0.5, draws),
@@ -381,8 +405,27 @@ def verdict(matched, intervals):
                 "with the raw asymmetry having followed the score rather than the class, "
                 "but it does not establish that: effects up to those bounds remain "
                 "compatible with the data".format(bounds))
-    return ("mixed: the two matched statistics do not agree ({}); report both and claim "
-            "neither reading".format(bounds))
+    # A larger average alongside a rank comparison that covers chance is worth
+    # naming, but only as what the intervals say. A heavy tail would produce
+    # it; so would other shapes, and an AUROC interval covering 0.5 means no
+    # per-sample discrimination was detected, not that there is none. Neither
+    # inference belongs in the sentence.
+    if ratio["low"] > 1.0 and not auroc["excludes_null"]:
+        difference = intervals.get("matched_difference", {})
+        also = (" and the paired difference agrees ({:.4f} to {:.4f})".format(
+            difference["low"], difference["high"])
+            if difference.get("determinable") and difference.get("excludes_null") else "")
+        return ("larger average movement for fakes, with no reliable per-sample "
+                "discrimination detected: the mean ratio stays above 1{} while the "
+                "matched AUROC covers 0.5 ({}). Whether the gap is carried by a minority "
+                "of videos is not settled by these numbers and needs its own "
+                "check".format(also, bounds))
+    if auroc["low"] > 0.5 and not ratio["excludes_null"]:
+        return ("matched fakes move more often than not, while the mean ratio covers 1 "
+                "({}): the direction is consistent, and the size of the average "
+                "difference is not pinned down by this interval".format(bounds))
+    return ("mixed: the two matched statistics point in incompatible directions ({}); "
+            "report both and claim neither reading".format(bounds))
 
 
 def main():
@@ -477,8 +520,13 @@ def print_report(report):
               "mean score gap %.4f" % (
                   matched["caliper"], matched["matched_reals"], matched["real_videos"],
                   matched["median_partners_per_real"], matched["mean_abs_score_gap"]))
-        print("  fake/real %.4f   matched AUROC %.4f" % (
-            matched["fake_over_real"], matched["matched_auroc"]))
+        print("  fake/real %.4f (ratio of means)   difference %+.4f   "
+              "matched AUROC %.4f" % (
+                  matched["fake_over_real"], matched["mean_paired_difference"],
+                  matched["matched_auroc"]))
+        print("  (mean of per-real ratios %.4f is structurally biased upward; "
+              "it reads ~2.1 with no effect at all)" %
+              matched["mean_of_per_real_ratios_biased"])
         print("  across calipers:")
         for key in sorted(report["score_matched_by_caliper"], key=float):
             row = report["score_matched_by_caliper"][key]

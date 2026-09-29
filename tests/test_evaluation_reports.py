@@ -961,6 +961,45 @@ class ShuffleSensitivityAuditTests(unittest.TestCase):
         return {"matched_fake_over_real": one(ratio_low, ratio_high, 1.0),
                 "matched_auroc": one(auroc_low, auroc_high, 0.5)}
 
+    @staticmethod
+    def skewed_no_class_effect(reals=134, fakes=8071, seed=0, fake_multiplier=1.0):
+        """Both classes drawn from one right-skewed perturbation distribution.
+
+        Real anomaly scores are skewed and some videos barely move at all,
+        which is exactly what breaks a statistic that divides by a single
+        video's perturbation.
+        """
+        rng = np.random.default_rng(seed)
+        ordered = np.concatenate([rng.normal(-1.78, 2.36, reals),
+                                  rng.normal(0.82, 2.01, fakes)])
+        labels = np.concatenate([np.ones(reals, dtype=int), np.zeros(fakes, dtype=int)])
+        perturbation = rng.lognormal(np.log(0.25), 0.8, reals + fakes)
+        perturbation = perturbation * np.where(labels == 0, fake_multiplier, 1.0)
+        return ordered, perturbation, labels
+
+    def test_ratio_of_means_is_unbiased_where_mean_of_ratios_is_not(self):
+        """The regression that produced a spurious 2.37 on the real export."""
+        from scripts.shuffle_sensitivity_audit import matched_comparison
+        ordered, perturbation, labels = self.skewed_no_class_effect()
+        matched = matched_comparison(ordered, perturbation, labels,
+                                     0.05 * ordered.std(), 3)
+        self.assertTrue(matched["determinable"])
+        # No class effect at all, yet dividing by one real's perturbation reads
+        # like a doubling. The reported statistic must not be that one.
+        self.assertGreater(matched["mean_of_per_real_ratios_biased"], 1.5)
+        self.assertAlmostEqual(matched["fake_over_real"], 1.0, delta=0.1)
+        self.assertAlmostEqual(matched["matched_auroc"], 0.5, delta=0.03)
+        self.assertAlmostEqual(matched["mean_paired_difference"], 0.0, delta=0.02)
+
+    def test_robust_statistics_still_detect_a_real_effect_under_skew(self):
+        from scripts.shuffle_sensitivity_audit import matched_comparison
+        ordered, perturbation, labels = self.skewed_no_class_effect(fake_multiplier=1.5)
+        matched = matched_comparison(ordered, perturbation, labels,
+                                     0.05 * ordered.std(), 3)
+        self.assertGreater(matched["fake_over_real"], 1.2)
+        self.assertGreater(matched["matched_auroc"], 0.57)
+        self.assertGreater(matched["mean_paired_difference"], 0.0)
+
     def test_verdict_reads_the_direction_not_just_exclusion(self):
         """An interval can exclude its null from either side."""
         from scripts.shuffle_sensitivity_audit import verdict
@@ -985,11 +1024,43 @@ class ShuffleSensitivityAuditTests(unittest.TestCase):
         self.assertIn("1.400", sentence)
         self.assertIn("0.610", sentence)
 
-    def test_verdict_refuses_to_call_disagreeing_statistics(self):
+    def test_verdict_states_the_intervals_without_asserting_a_mechanism(self):
+        """A larger mean with a chance-covering AUROC is reportable, not explainable.
+
+        A heavy tail would produce this pattern, but so would other shapes, and
+        an AUROC interval covering 0.5 means no per-sample discrimination was
+        detected rather than that none exists. Neither claim may appear.
+        """
+        from scripts.shuffle_sensitivity_audit import verdict
+        intervals = self.intervals(1.20, 1.45, 0.47, 0.56)
+        intervals["matched_difference"] = {"draws": 100, "determinable": True,
+                                           "low": 0.010, "high": 0.090,
+                                           "excludes_null": True}
+        sentence = verdict({"determinable": True}, intervals)
+        self.assertIn("larger average movement for fakes", sentence)
+        self.assertIn("no reliable per-sample discrimination detected", sentence)
+        self.assertIn("not settled by these numbers", sentence)
+        # The paired difference is folded into the same judgement.
+        self.assertIn("paired difference agrees", sentence)
+        for overreach in ("heavy tail", "a few videos carry",
+                          "without a per-sample signal", "incompatible directions"):
+            self.assertNotIn(overreach, sentence)
+
+    def test_verdict_does_not_call_an_unpinned_magnitude_small(self):
+        """A ratio interval covering 1 can still admit a sizeable effect."""
         from scripts.shuffle_sensitivity_audit import verdict
         sentence = verdict({"determinable": True},
-                           self.intervals(1.20, 1.45, 0.42, 0.61))
-        self.assertIn("mixed", sentence)
+                           self.intervals(0.98, 1.30, 0.53, 0.59))
+        self.assertIn("more often than not", sentence)
+        self.assertIn("not pinned down by this interval", sentence)
+        self.assertNotIn("small in magnitude", sentence)
+
+    def test_verdict_still_refuses_genuinely_opposite_directions(self):
+        from scripts.shuffle_sensitivity_audit import verdict
+        # Mean says fakes move more, ranks say reals do.
+        sentence = verdict({"determinable": True},
+                           self.intervals(1.20, 1.45, 0.30, 0.44))
+        self.assertIn("incompatible directions", sentence)
 
     def test_verdict_needs_both_intervals_to_be_determinable(self):
         from scripts.shuffle_sensitivity_audit import verdict
