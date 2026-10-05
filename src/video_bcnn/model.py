@@ -4,6 +4,7 @@ import math
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 import pyro
 import pyro.distributions as dist
 
@@ -56,8 +57,11 @@ class SequenceShuffleMixin:
 
 def _stage_statistics(pre_activation, activated):
     with torch.no_grad():
+        # Count rather than .float().mean(): on the interleaved E2 the stage-3
+        # tensor holds ~5e8 elements, and a float32 copy of it is 2 GB.
         return {"preactivation_abs_mean": float(pre_activation.abs().mean()),
-                "saturated_fraction": float((pre_activation.abs() > 4).float().mean()),
+                "saturated_fraction": float((pre_activation.abs() > 4).sum())
+                                      / max(1, pre_activation.numel()),
                 "output_std": float(activated.std(unbiased=False))}
 
 
@@ -75,6 +79,88 @@ def _norm3d(kind, channels):
     if kind == "batch":
         return nn.BatchNorm3d(channels)
     raise ValueError("norm must be 'none' or 'batch'.")
+
+
+def standard_to_grouped_weight(weight, depth_stride):
+    """Map an ordinary Conv3d weight onto InterleavedConv3d's layout.
+
+    weight is [out, C, k, kh, kw]. Read frame-major, its flattened tap
+    j = t*C + c is the plane the kernel meets j planes into its window; with
+    stride s that plane is channel j % s at depth tap j // s.
+    """
+    out, channels, temporal, height, width = weight.shape
+    span = channels * temporal
+    flat = weight.permute(0, 2, 1, 3, 4).reshape(out, span, height, width)
+    return (flat.reshape(out, span // depth_stride, depth_stride, height, width)
+            .permute(0, 2, 1, 3, 4).contiguous())
+
+
+class InterleavedConv3d(nn.Module):
+    """Conv3d that slides along the channel-interleaved depth axis.
+
+    [B,C,D,H,W] is read position by position -- c1..cC of position 1, then of
+    position 2 -- as D*C single-channel planes. The kernel spans
+    `temporal` whole positions (temporal*C planes, the same weights as the
+    ordinary Conv3d) and steps `depth_stride` planes. Stride C is therefore
+    exactly the ordinary layer; a smaller stride lets a window start part-way
+    through a position, so it straddles two of them.
+
+    Computed as an ordinary convolution after regrouping: with stride s, plane
+    m*s + r becomes channel r at depth m, and the temporal*C-plane kernel
+    becomes temporal*C/s depth taps over s channels at stride 1. That is the
+    same sum in a shape cuDNN handles far better than one input channel with a
+    kernel 48 or 72 planes deep.
+    """
+
+    def __init__(self, in_channels, out_channels, kernel_size, depth_stride,
+                 temporal_padding):
+        super().__init__()
+        temporal, height, width = (int(v) for v in kernel_size)
+        self.in_channels, self.depth_stride = int(in_channels), int(depth_stride)
+        self.span = temporal * self.in_channels
+        self.padding = int(temporal_padding) * self.in_channels
+        if self.depth_stride < 1 or self.span % self.depth_stride or \
+                self.padding % self.depth_stride:
+            raise ValueError(
+                "depth_stride {} must divide the kernel span {} and the padding {} "
+                "planes.".format(self.depth_stride, self.span, self.padding))
+        self.conv = nn.Conv3d(self.depth_stride, int(out_channels),
+                              (self.span // self.depth_stride, height, width))
+        # Xavier on the ordinary layer's shape, then mapped: Xavier's bound
+        # depends on fan-out, which the regrouped shape would inflate 16-fold
+        # at stride 1, and E2 is the reference this has to start from.
+        standard = torch.empty(int(out_channels), self.in_channels, temporal,
+                               height, width)
+        nn.init.xavier_uniform_(standard)
+        with torch.no_grad():
+            self.conv.weight.copy_(standard_to_grouped_weight(standard, self.depth_stride))
+            self.conv.bias.zero_()
+
+    def output_depth(self, depth):
+        planes = depth * self.in_channels + 2 * self.padding
+        return (planes - self.span) // self.depth_stride + 1
+
+    def forward(self, values):
+        batch, channels, depth, height, width = values.shape
+        if channels != self.in_channels:
+            raise ValueError("Expected {} channels, received {}.".format(
+                self.in_channels, channels))
+        planes = values.permute(0, 2, 1, 3, 4).reshape(batch, depth * channels,
+                                                       height, width)
+        if self.padding:
+            planes = F.pad(planes, (0, 0, 0, 0, self.padding, self.padding))
+        # Trailing planes that cannot start a full window are never read, and
+        # dropping them leaves the window count unchanged because the span is
+        # a multiple of the stride.
+        usable = planes.shape[1] // self.depth_stride * self.depth_stride
+        grouped = planes[:, :usable].reshape(
+            batch, usable // self.depth_stride, self.depth_stride, height, width
+        ).permute(0, 2, 1, 3, 4)
+        return self.conv(grouped)
+
+
+def _conv_then_pool(convolution, pool, values):
+    return pool(convolution(values))
 
 
 class ResidualTemporalBlock(nn.Module):
@@ -150,7 +236,8 @@ class Stable3DFeatureExtractor(SequenceShuffleMixin, nn.Module):
                  activation="relu", spatial_output_size=4,
                  stage_pool_type="avg", final_pool_type="avg", norm="batch", temporal_head="tcn",
                  temporal_aggregation="gap", temporal_steps=32,
-                 conv1_spatial_stride=1, tcn_channels=512, **legacy):
+                 conv1_spatial_stride=1, tcn_channels=512, interleave_strides=None,
+                 interleave_chunk_size=0, **legacy):
         super().__init__()
         # Backward compatible name used by V1 configs.
         ambiguous = [key for key in ("pool_type", "spatial_pool_type") if key in legacy]
@@ -208,9 +295,47 @@ class Stable3DFeatureExtractor(SequenceShuffleMixin, nn.Module):
         for layer in (self.conv1, self.conv2, self.conv3):
             nn.init.xavier_uniform_(layer.weight)
             nn.init.zeros_(layer.bias)
+        # Built after the init above so that the ordinary models consume the RNG
+        # in exactly the order they always have.
+        # E2-interleave: conv2/conv3 slide along the channel-interleaved depth
+        # axis, one entry per layer in planes, None keeping the ordinary layer.
+        # Same kernels and parameter count as E2; only the depth stride differs.
+        strides = list(interleave_strides) if interleave_strides else [None, None]
+        if len(strides) != 2:
+            raise ValueError("interleave_strides needs one entry each for conv2 and conv3.")
+        self.interleave_strides = [None if v is None else int(v) for v in strides]
+        if any(v is not None for v in self.interleave_strides) and temporal_head != "mean":
+            raise ValueError(
+                "interleave_strides changes how many depth positions the trunk emits, "
+                "which only the mean head averages away; the TCN expects T steps.")
+        # The ordinary layers above were initialised from the same RNG draws as
+        # E2. Preserve those exact weights under the new layout, and restore
+        # the RNG state so the following Phase-A classifier also starts from
+        # the same seed-42 weights as its E2 counterpart.
+        rng_state = torch.random.get_rng_state() if any(
+            v is not None for v in self.interleave_strides) else None
+        for name, stride, (inputs, outputs) in zip(
+                 ("conv2", "conv3"), self.interleave_strides,
+                 ((channels[0], channels[1]), (channels[1], channels[2]))):
+            if stride is not None:
+                ordinary = getattr(self, name)
+                interleaved = InterleavedConv3d(
+                    inputs, outputs, kernel, stride, kernel_size // 2)
+                with torch.no_grad():
+                    interleaved.conv.weight.copy_(standard_to_grouped_weight(
+                        ordinary.weight, stride))
+                    interleaved.conv.bias.copy_(ordinary.bias)
+                setattr(self, name, interleaved)
+        if rng_state is not None:
+            torch.random.set_rng_state(rng_state)
+        # Samples per checkpointed conv+pool chunk on interleaved layers; 0 off.
+        self.interleave_chunk_size = int(interleave_chunk_size or 0)
 
     @property
     def temporal_receptive_field(self):
+        if any(v is not None for v in self.interleave_strides):
+            # Depth positions are no longer frames, so a frame count would mislead.
+            return None
         base = 1 + 3 * (self.temporal_kernel_size - 1)
         return base if self.temporal_head == "mean" else base + 6
 
@@ -228,11 +353,36 @@ class Stable3DFeatureExtractor(SequenceShuffleMixin, nn.Module):
         for convolution, pool, norm in ((self.conv1, self.pool1, self.norm1),
                                         (self.conv2, self.pool2, self.norm2),
                                         (self.conv3, self.pool3, self.norm3)):
-            pre = norm(pool(convolution(values)))
+            pre = norm(self._conv_pool(convolution, pool, values))
             values = self.activation(pre)
-            stats.append(_stage_statistics(pre, values))
+            # Training never consumes these diagnostics. In the interleaved
+            # model the final tensor can be enormous, and computing its stats
+            # every optimizer step creates large temporary allocations.
+            if not self.training:
+                stats.append(_stage_statistics(pre, values))
         self.last_activation_stats = stats
         return self._spatial_reduce(values)
+
+    def _conv_pool(self, convolution, pool, values):
+        """conv+pool, in recomputed sample chunks on an interleaved layer.
+
+        Only batch normalisation couples the samples of a batch; convolution and
+        pooling are per sample. So the interleaved layers, whose pre-pool output
+        is the largest tensor in the model, run a few samples at a time and are
+        recomputed in backward instead of stored, and the pooled chunks are
+        joined before the norm -- which still sees all 4 real + 4 fake. Norm
+        stays outside the checkpoint: recomputing it would update its running
+        statistics twice per step.
+        """
+        chunk = self.interleave_chunk_size
+        if not chunk or not isinstance(convolution, InterleavedConv3d) or \
+                values.shape[0] <= chunk:
+            return pool(convolution(values))
+        if not torch.is_grad_enabled():
+            return torch.cat([pool(convolution(part)) for part in values.split(chunk)])
+        return torch.cat([checkpoint(_conv_then_pool, convolution, pool, part,
+                                     use_reentrant=False)
+                          for part in values.split(chunk)])
 
     def trunk_sequence(self, clips):
         """[B,3,T,H,W] -> [B,T,C] exactly what the temporal head is handed.
@@ -489,4 +639,6 @@ def build_feature_extractor(model_config):
         temporal_aggregation=model_config.get("temporal_aggregation", "gap"),
         temporal_steps=model_config.get("temporal_steps", 32),
         conv1_spatial_stride=model_config.get("conv1_spatial_stride", 1),
-        tcn_channels=model_config.get("feature_dim", 512))
+        tcn_channels=model_config.get("feature_dim", 512),
+        interleave_strides=model_config.get("interleave_strides"),
+        interleave_chunk_size=model_config.get("interleave_chunk_size", 0))

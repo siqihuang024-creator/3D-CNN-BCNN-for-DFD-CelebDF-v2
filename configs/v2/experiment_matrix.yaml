@@ -22,6 +22,29 @@ E2_dfd:
   model: {spatial_output_size: 22, feature_dim: 15488,
           temporal_head: mean, temporal_aggregation: gap}
   train: {physical_batch_size: 8, gradient_accumulation_steps: 1}
+E2_interleave:
+  # E2 with conv2 and conv3 sliding along the channel-interleaved depth axis:
+  # each position's channels are laid out in order, c1..cC of position 1 then
+  # of position 2, and the kernel -- the same 3 positions x C channels x 5x5 as
+  # E2, so the same 105,769 parameters -- steps this many planes. E2 is [16, 24]
+  # (one whole position); [1, 4] lets windows start part-way through one.
+  # Depth grows 32 -> 497 -> 2977 and is averaged away by the mean head as
+  # before. Two samples at a time go through each interleaved conv+pool and are
+  # recomputed in backward; BatchNorm still sees the full 4 real + 4 fake.
+  # CelebDFv3 only: DFD's E2 already fills a 12 GB card.
+  model: {spatial_output_size: 22, feature_dim: 15488,
+          temporal_head: mean, temporal_aggregation: gap,
+          interleave_strides: [1, 4], interleave_chunk_size: 2}
+  train: {physical_batch_size: 8, gradient_accumulation_steps: 1}
+E2_interleave_budget:
+  # Same channel-interleaved kernels and E2 batch protocol as E2_interleave,
+  # with a coarser scan for a practical first run. Depth: 32 -> 249 -> 745.
+  # It still changes compute, temporal sampling density, and BN statistics;
+  # equal parameter count alone does not isolate a learned channel relation.
+  model: {spatial_output_size: 22, feature_dim: 15488,
+          temporal_head: mean, temporal_aggregation: gap,
+          interleave_strides: [2, 8], interleave_chunk_size: 2}
+  train: {physical_batch_size: 8, gradient_accumulation_steps: 1}
 E3:
   model: {spatial_output_size: 4, feature_dim: 512,
           temporal_head: mean, temporal_aggregation: gap}

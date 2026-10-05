@@ -59,3 +59,6 @@ checkpoints_backup/
 # size: 290 MB of embeddings, logs and score dumps whose numbers already live in
 # results/. Delete freely once the pod is returned.
 scratch_archive/
+
+# Local copies of downloaded experiment bundles and reports.
+实验结果/

@@ -55,6 +55,14 @@ VARIANTS = {
     "e2": {"spatial_output_size": 22, "temporal_head": "mean", "feature_dim": 32 * 22 * 22},
     "e3": {"spatial_output_size": 4, "temporal_head": "mean", "feature_dim": 512},
     "e4": {"spatial_output_size": 4, "temporal_head": "tcn", "feature_dim": 512},
+    # Mirrors E2_interleave in configs/v2/experiment_matrix.yaml.
+    "e2_interleave": {"spatial_output_size": 22, "temporal_head": "mean",
+                      "feature_dim": 32 * 22 * 22, "interleave_strides": [1, 4],
+                      "interleave_chunk_size": 2},
+    "e2_interleave_budget": {"spatial_output_size": 22, "temporal_head": "mean",
+                             "feature_dim": 32 * 22 * 22,
+                             "interleave_strides": [2, 8],
+                             "interleave_chunk_size": 2},
 }
 
 

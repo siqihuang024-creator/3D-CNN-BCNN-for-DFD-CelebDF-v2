@@ -1,5 +1,6 @@
 """Fast, data-free tests for the V2 experiment contracts."""
 
+import copy
 import sys
 import unittest
 import tempfile
@@ -9,6 +10,7 @@ import numpy as np
 import pyro
 import torch
 from pyro.infer import SVI, Trace_ELBO
+import torch.nn.functional as F
 from torch import nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -19,10 +21,11 @@ from video_bcnn.evaluation import score_bayesian_cached
 from video_bcnn.experiment import BalancedBatchSampler, GroupBalancedEpochSampler
 from video_bcnn.features import FeatureCacheDataset
 from video_bcnn.metrics import calibrate_threshold, detection_metrics
-from video_bcnn.model import (DeterministicHead, MC3FeatureExtractor,
-                              ResidualTemporalBlock, Stable3DFeatureExtractor,
-                              TemporalAggregator, VideoBayesianCNN,
-                              freeze_extractor)
+from video_bcnn.model import (DeterministicHead, InterleavedConv3d,
+                              MC3FeatureExtractor, ResidualTemporalBlock,
+                              Stable3DFeatureExtractor, TemporalAggregator,
+                              VideoBayesianCNN, freeze_extractor,
+                              standard_to_grouped_weight)
 from video_bcnn.protocols import assign_protocol, protocol_audit
 
 
@@ -39,6 +42,125 @@ class ModelTests(unittest.TestCase):
         output = model(torch.randn(2, 3, 8, 96, 96))
         self.assertEqual(tuple(output.shape), (2, 512))
         self.assertGreater(model.last_temporal_stats["output_std"], 0)
+
+    @staticmethod
+    def _interleaved_from(standard, stride):
+        layer = InterleavedConv3d(standard.in_channels, standard.out_channels,
+                                  standard.kernel_size, stride,
+                                  standard.padding[0]).double()
+        with torch.no_grad():
+            layer.conv.weight.copy_(standard_to_grouped_weight(standard.weight, stride))
+            layer.conv.bias.copy_(standard.bias)
+        return layer
+
+    def test_interleave_at_channel_stride_is_the_ordinary_conv(self):
+        torch.manual_seed(0)
+        standard = nn.Conv3d(4, 5, (3, 3, 3), padding=(1, 0, 0)).double()
+        values = torch.randn(2, 4, 6, 7, 7, dtype=torch.float64)
+        layer = self._interleaved_from(standard, 4)
+        self.assertTrue(torch.allclose(layer(values), standard(values), atol=1e-12))
+
+    def test_interleave_matches_literal_flattened_convolution(self):
+        # The definition, written out: lay the channels of each position in
+        # order, then slide a span-deep single-channel kernel `stride` planes.
+        torch.manual_seed(0)
+        standard = nn.Conv3d(4, 5, (3, 3, 3), padding=(1, 0, 0)).double()
+        values = torch.randn(2, 4, 6, 7, 7, dtype=torch.float64)
+        flat = values.permute(0, 2, 1, 3, 4).reshape(2, 1, 24, 7, 7)
+        kernel = standard.weight.permute(0, 2, 1, 3, 4).reshape(5, 1, 12, 3, 3)
+        for stride in (1, 2, 4):
+            expected = F.conv3d(flat, kernel, standard.bias,
+                                stride=(stride, 1, 1), padding=(4, 0, 0))
+            layer = self._interleaved_from(standard, stride)
+            output = layer(values)
+            self.assertEqual(output.shape[2], layer.output_depth(6))
+            self.assertTrue(torch.allclose(output, expected, atol=1e-12), stride)
+
+    def test_e2_interleave_depths_and_parameter_count(self):
+        self.assertEqual(InterleavedConv3d(16, 24, (3, 5, 5), 1, 1).output_depth(32), 497)
+        self.assertEqual(InterleavedConv3d(24, 32, (3, 5, 5), 4, 1).output_depth(497), 2977)
+        self.assertEqual(InterleavedConv3d(16, 24, (3, 5, 5), 2, 1).output_depth(32), 249)
+        self.assertEqual(InterleavedConv3d(24, 32, (3, 5, 5), 8, 1).output_depth(249), 745)
+        count = lambda model: sum(p.numel() for p in model.parameters())
+        e2 = Stable3DFeatureExtractor(temporal_head="mean", spatial_output_size=22)
+        interleaved = Stable3DFeatureExtractor(temporal_head="mean", spatial_output_size=22,
+                                               interleave_strides=[1, 4])
+        self.assertEqual(count(e2), 90280)
+        self.assertEqual(count(interleaved), count(e2))
+        with self.assertRaises(ValueError):
+            Stable3DFeatureExtractor(temporal_head="tcn", interleave_strides=[1, 4])
+
+    def test_full_e2_matches_interleaved_at_whole_position_stride(self):
+        torch.manual_seed(3)
+        ordinary = Stable3DFeatureExtractor(
+            temporal_head="mean", spatial_output_size=2,
+            conv_channels=(4, 6, 8)).double().eval()
+        interleaved = Stable3DFeatureExtractor(
+            temporal_head="mean", spatial_output_size=2,
+            conv_channels=(4, 6, 8), interleave_strides=[4, 6]).double().eval()
+        ordinary_state = ordinary.state_dict()
+        transferred = interleaved.state_dict()
+        for name in transferred:
+            if name.startswith("conv2.conv.") or name.startswith("conv3.conv."):
+                layer = name.split(".")[0]
+                source = ordinary_state[layer + "." + name.split(".")[-1]]
+                if name.endswith("weight"):
+                    stride = 4 if layer == "conv2" else 6
+                    source = standard_to_grouped_weight(source, stride)
+                transferred[name] = source
+            else:
+                transferred[name] = ordinary_state[name]
+        interleaved.load_state_dict(transferred)
+        clips = torch.randn(2, 3, 4, 64, 64, dtype=torch.float64)
+        with torch.no_grad():
+            self.assertTrue(torch.allclose(ordinary(clips), interleaved(clips),
+                                           atol=1e-10, rtol=1e-10))
+
+    def test_interleaved_initialization_preserves_e2_weights_and_head_rng(self):
+        def make_model(strides):
+            extractor = Stable3DFeatureExtractor(
+                temporal_head="mean", spatial_output_size=2,
+                conv_channels=(4, 6, 8), interleave_strides=strides)
+            return extractor, DeterministicHead(extractor.feature_dim)
+
+        torch.manual_seed(42)
+        ordinary, ordinary_head = make_model(None)
+        torch.manual_seed(42)
+        interleaved, interleaved_head = make_model([2, 3])
+        self.assertTrue(torch.equal(ordinary.conv1.weight,
+                                    interleaved.conv1.weight))
+        for layer, stride in (("conv2", 2), ("conv3", 3)):
+            reference = getattr(ordinary, layer)
+            changed = getattr(interleaved, layer).conv
+            self.assertTrue(torch.equal(changed.weight,
+                standard_to_grouped_weight(reference.weight, stride)))
+            self.assertTrue(torch.equal(changed.bias, reference.bias))
+        self.assertTrue(torch.equal(ordinary_head.out.weight,
+                                    interleaved_head.out.weight))
+
+    def test_chunked_recompute_matches_whole_batch_and_bn_steps_once(self):
+        torch.manual_seed(0)
+        whole = Stable3DFeatureExtractor(conv_channels=(4, 8, 8), temporal_head="mean",
+                                         spatial_output_size=2,
+                                         interleave_strides=[1, 4]).double()
+        chunked = copy.deepcopy(whole)
+        chunked.interleave_chunk_size = 1
+        clips = torch.randn(3, 3, 4, 64, 64, dtype=torch.float64)
+        outputs = []
+        for model in (whole, chunked):
+            model.train()
+            output = model(clips)
+            output.square().sum().backward()
+            outputs.append(output)
+        self.assertTrue(torch.allclose(outputs[0], outputs[1], atol=1e-10))
+        for (name, a), (_, b) in zip(whole.named_parameters(), chunked.named_parameters()):
+            self.assertTrue(torch.allclose(a.grad, b.grad, atol=1e-10), name)
+        for (name, a), (_, b) in zip(whole.named_buffers(), chunked.named_buffers()):
+            if a.is_floating_point():
+                self.assertTrue(torch.allclose(a, b, atol=1e-12), name)
+            else:  # num_batches_tracked: one BN update per step, not two
+                self.assertTrue(torch.equal(a, b), name)
+        self.assertEqual(int(chunked.norm3.num_batches_tracked), 1)
 
     def test_non_square_pool_for_dfd_screen(self):
         model = Stable3DFeatureExtractor(temporal_head="mean",
