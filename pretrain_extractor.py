@@ -19,7 +19,8 @@ sys.path.insert(0, str(ROOT / "src"))
 from video_bcnn.data import (load_manifest, preflight_face_cache, seed_worker,
                              skip_unreadable_collate)
 from video_bcnn.evaluation import score_deterministic
-from video_bcnn.experiment import (BalancedBatchSampler, GroupBalancedEpochSampler,
+from video_bcnn.experiment import (BalancedBatchSampler, PoolPassBatchSampler,
+                                   GroupBalancedEpochSampler,
                                    active_records, capped_validation_records,
                                    make_dataset, select_records)
 from video_bcnn.metrics import calibrate_threshold, detection_metrics
@@ -110,15 +111,15 @@ def main():
 
     records = active_records(load_manifest(args.manifest), config)
     train_records = select_records(records, "train")
-    val_records = select_records(records, "val")
-    if not train_records or not val_records:
+    full_val_records = select_records(records, "val")
+    if not train_records or not full_val_records:
         raise ValueError("Manifest must contain non-empty train and val splits.")
     if {int(row["label"]) for row in train_records} != {0, 1}:
         raise ValueError("Phase A needs both real and fake training videos.")
     # Fixed selection seed: runs that differ only in training seed must pick
     # their best epoch on the same validation videos.
     val_records = capped_validation_records(
-        val_records, int(config["data"].get("selection_seed", 42)),
+        full_val_records, int(config["data"].get("selection_seed", 42)),
         config["data"].get("selection_max_fakes_per_dataset", 1000))
     if args.smoke_test:
         # Manifests are sorted real-first; truncating the loader would otherwise
@@ -126,7 +127,12 @@ def main():
         per_class = max(2, int(args.smoke_test))
         val_records = ([row for row in val_records if int(row["label"]) == 1][:per_class] +
                        [row for row in val_records if int(row["label"]) == 0][:per_class])
-    preflight_face_cache(train_records + val_records, config)
+    # A pool-pass run will later score the entire merged development set. Catch
+    # missing caches and short videos before committing to a long training run.
+    preflight_records = (train_records + full_val_records
+                         if config["train"].get("epoch_protocol") == "pool_pass"
+                         else train_records + val_records)
+    preflight_face_cache(preflight_records, config)
 
     train_set = make_dataset(train_records, config, training=True)
     val_set = make_dataset(val_records, config, training=False,
@@ -137,7 +143,15 @@ def main():
     group_count = len({tuple(row[key] for key in balance_keys) for row in train_records})
     per_group = int(config["train"].get("clips_per_class_per_epoch", 1000))
     options = _loader_options(config, device)
-    if physical >= group_count and physical % group_count == 0:
+    if config["train"].get("epoch_protocol") == "pool_pass":
+        # The epoch is one pass over the training pool, not a per-class clip
+        # budget, so clips_per_class_per_epoch does not apply.
+        if group_count != 2:
+            raise ValueError("pool_pass expects one dataset with real and fake videos.")
+        sampler = PoolPassBatchSampler(train_records, physical, int(config.get("seed", 42)))
+        train_loader = DataLoader(train_set, batch_sampler=sampler, **options)
+        batch_protocol = "one pass over the pool per epoch, random class mix, >=1 real and >=1 fake per batch"
+    elif physical >= group_count and physical % group_count == 0:
         clips_per_epoch = group_count * per_group
         if clips_per_epoch % physical:
             raise ValueError("clips_per_epoch must be divisible by physical batch size.")
@@ -177,11 +191,23 @@ def main():
     checkpoint_dir, log_dir = ensure_dir(run_dir / "checkpoints"), ensure_dir(run_dir / "logs")
     metadata = runtime_metadata(config, ROOT)
     clips_per_epoch = (len(sampler) * physical
-                       if isinstance(sampler, BalancedBatchSampler) else len(sampler))
+                       if isinstance(sampler, (BalancedBatchSampler, PoolPassBatchSampler))
+                       else len(sampler))
     batches_per_epoch = int(np.ceil(clips_per_epoch / float(physical)))
     metadata.update({
         "optimizer": "Adam", "learning_rate": optimizer.param_groups[0]["lr"],
         "lr_gamma": float(config["train"].get("lr_gamma", 0.95)),
+        "manifest": str(args.manifest),
+        "batch_protocol": batch_protocol,
+        "training_pool_videos_by_class": {
+            name: sum(row["class_name"] == name for row in train_records)
+            for name in ("real", "fake")},
+        "selection_validation_videos_by_class": {
+            name: sum(row["class_name"] == name for row in val_records)
+            for name in ("real", "fake")},
+        "development_validation_videos_by_class": {
+            name: sum(row["class_name"] == name for row in full_val_records)
+            for name in ("real", "fake")},
         "clips_per_epoch": int(clips_per_epoch),
         "optimizer_steps_per_epoch": int(np.ceil(batches_per_epoch / float(accumulation))),
         "experiment": args.experiment,
@@ -287,6 +313,10 @@ def main():
         diagnostics = {"activation_stages": copy.deepcopy(extractor.last_activation_stats),
                        "temporal": copy.deepcopy(getattr(extractor, "last_temporal_stats", {}))}
         row = {"epoch": epoch, "train_loss": running / max(1, seen),
+               "batch_real_count_histogram": (
+                   {str(count): sampler.last_real_counts.count(count)
+                    for count in sorted(set(sampler.last_real_counts))}
+                   if isinstance(sampler, PoolPassBatchSampler) else None),
                "skipped_training_clips": len(skipped_training_paths),
                "skipped_training_paths": skipped_training_paths,
                "skipped_validation_videos": scored["skipped_unreadable"],

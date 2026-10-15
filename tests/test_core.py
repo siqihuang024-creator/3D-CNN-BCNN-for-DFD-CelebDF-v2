@@ -15,10 +15,11 @@ from torch import nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from video_bcnn.data import (MissingFaceCacheError, VideoClipDataset,
+from video_bcnn.data import (MissingFaceCacheError, ShortVideoError, VideoClipDataset,
                              preflight_face_cache, skip_unreadable_collate)
 from video_bcnn.evaluation import score_bayesian_cached
-from video_bcnn.experiment import BalancedBatchSampler, GroupBalancedEpochSampler
+from video_bcnn.experiment import (BalancedBatchSampler, GroupBalancedEpochSampler,
+                                   PoolPassBatchSampler)
 from video_bcnn.features import FeatureCacheDataset
 from video_bcnn.metrics import calibrate_threshold, detection_metrics
 from video_bcnn.model import (DeterministicHead, InterleavedConv3d,
@@ -311,6 +312,42 @@ class BatchAndMetricTests(unittest.TestCase):
         self.assertEqual(len(balanced) * 8, 2000)
         self.assertEqual(len(baseline), 2000)
 
+    def test_pool_pass_covers_every_video_with_both_classes_per_batch(self):
+        from collections import Counter
+        records = [{"class_name": "real"}] * 623 + [{"class_name": "fake"}] * 1246
+        sampler = PoolPassBatchSampler(records, batch_size=8, seed=42)
+        mixes = set()
+        for epoch in (1, 2, 3):
+            sampler.set_epoch(epoch)
+            batches = list(sampler)
+            self.assertEqual(len(batches), 234)
+            self.assertTrue(all(len(batch) == 8 and len(set(batch)) == 8 for batch in batches))
+            uses = Counter(index for batch in batches for index in batch)
+            self.assertEqual(set(uses), set(range(len(records))))
+            self.assertEqual(sum(count - 1 for count in uses.values()), 3)
+            repeated = [index for index, count in uses.items() if count == 2]
+            self.assertEqual(sum(index < 623 for index in repeated), 1)
+            self.assertEqual(sum(index >= 623 for index in repeated), 2)
+            real_counts = [sum(index < 623 for index in batch) for batch in batches]
+            self.assertTrue(all(1 <= count <= 7 for count in real_counts))
+            self.assertEqual(sum(real_counts), 624)
+            self.assertEqual(sampler.last_real_counts, real_counts)
+            mixes.update(real_counts)
+        self.assertGreater(len(mixes), 3)
+        self.assertEqual(batches, list(sampler))
+        sampler.set_epoch(4)
+        self.assertNotEqual(batches, list(sampler))
+
+    def test_pool_pass_repairs_a_batch_missing_a_class(self):
+        records = [{"class_name": "real"}] * 3 + [{"class_name": "fake"}] * 21
+        for seed in range(50):
+            batches = list(PoolPassBatchSampler(records, batch_size=8, seed=seed))
+            self.assertEqual(sorted(index for batch in batches for index in batch),
+                             list(range(24)))
+            self.assertTrue(all(sum(index < 3 for index in batch) == 1 for batch in batches))
+        with self.assertRaises(ValueError):
+            PoolPassBatchSampler(records[:2] + records[3:], batch_size=8)
+
     def test_metrics_report_both_ap_directions_and_lift(self):
         labels = np.asarray([1, 1, 0, 0])
         scores = np.asarray([0.1, 0.2, 0.8, 0.9])
@@ -325,6 +362,31 @@ class BatchAndMetricTests(unittest.TestCase):
 
 
 class DataTests(unittest.TestCase):
+    def test_revised_phase_a_uses_contiguous_32_frame_clips(self):
+        import yaml
+        config = yaml.safe_load((Path(__file__).resolve().parents[1] /
+            "configs/v2/phase_a_celeb_revised.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(config["data"]["train_clip_strides"], [1])
+        self.assertEqual(config["data"]["horizontal_flip_probability"], 0.0)
+        self.assertEqual(config["data"]["eval_clip_stride"], 1)
+        self.assertEqual(config["data"]["selection_clips_per_video"],
+                         config["data"]["eval_clips_per_video"])
+        self.assertTrue(config["data"]["require_full_clip"])
+        dataset = VideoClipDataset.__new__(VideoClipDataset)
+        dataset.clip_length = 32
+        dataset.require_full_clip = True
+        dataset.train_clip_strides = (1,)
+        dataset.eval_clip_stride = 1
+        dataset.clips_per_video = 8
+        dataset.deterministic_clips = False
+        for training in (True, False):
+            dataset.training = training
+            clips = dataset.clip_indices(100)
+            self.assertTrue(all(len(clip) == 32 and
+                all(b - a == 1 for a, b in zip(clip, clip[1:])) for clip in clips))
+        with self.assertRaises(ShortVideoError):
+            dataset.clip_indices(31)
+
     def test_t32_stride2_indices(self):
         dataset = VideoClipDataset.__new__(VideoClipDataset)
         dataset.training = False
@@ -364,6 +426,47 @@ class DataTests(unittest.TestCase):
             rows = [{"dataset": "DFD", "path": "a.mp4"}]
             with self.assertRaises(MissingFaceCacheError):
                 preflight_face_cache(rows, config)
+
+    def test_strict_clip_preflight_rejects_short_cached_video(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / "DFD" / "short.mp4.npz"
+            cache.parent.mkdir(parents=True)
+            np.savez(cache, frame_count=np.asarray(1))
+            config = {"data": {"frame_mode": "face", "face_box_cache": directory,
+                               "clip_length": 32, "require_full_clip": True}}
+            with self.assertRaisesRegex(ShortVideoError, "short.mp4"):
+                preflight_face_cache([{"dataset": "DFD", "path": "short.mp4"}], config)
+
+    def test_strict_decoder_does_not_repeat_a_failed_frame(self):
+        class TruncatedCapture:
+            def __init__(self):
+                self.position = 0
+
+            def set(self, _property, position):
+                self.position = int(position)
+
+            def read(self):
+                self.position += 1
+                return ((True, np.zeros((2, 2, 3), dtype=np.uint8))
+                        if self.position <= 1 else (False, None))
+
+            def grab(self):
+                if self.position >= 1:
+                    return False
+                self.position += 1
+                return True
+
+            def retrieve(self):
+                return True, np.zeros((2, 2, 3), dtype=np.uint8)
+
+        indices = [[0, 1, 2]]
+        self.assertIsNone(VideoClipDataset._decode_clips(
+            TruncatedCapture(), "truncated.mp4", indices,
+            require_full_clip=True))
+        with self.assertRaises(ShortVideoError):
+            VideoClipDataset._decode_clips_sequential(
+                TruncatedCapture(), "truncated.mp4", indices,
+                require_full_clip=True)
 
     def test_feature_cache_matches_manifest_keys_not_row_order(self):
         with tempfile.TemporaryDirectory() as directory:

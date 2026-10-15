@@ -1,16 +1,16 @@
 """Decode every manifest video end to end and record what FFmpeg complains about.
 
 ``report_video_sizes.py`` reads container metadata only, so a file whose header
-is intact but whose stream is truncated is reported ``ok``. The first Stage A
+is intact but whose stream is truncated is reported ``ok``. This scan records
+the number of frames FFmpeg actually outputs and can flag clips shorter than a
+specified minimum. The first Stage A
 run on DFD showed what that misses: ``moov atom not found``, ``partial file``,
 ``Invalid NAL unit size`` and 30-second read timeouts, all while the epoch line
 reported ``skipped=0``.
 
-Nothing was skipped because the loader hides the failure. ``_decode_clips``
-copies the previous frame whenever a read fails (``data.py:358-365``), so a
-corrupt video still yields a clip -- one that may be the same frame eight times
-over, carrying no temporal signal at all, labelled and trained on like any
-other.
+The legacy, non-strict loader could hide these failures by repeating a frame.
+The revised strict-clip protocol rejects missing frames at runtime, but an
+up-front full-decode scan avoids discovering failures mid-training.
 
 That is a correctness problem before it is a speed problem. If corruption is
 not spread evenly across the classes, "is this clip frozen?" becomes a free
@@ -26,6 +26,11 @@ Usage:
         --manifest artifacts/manifests/combined_manifest_stage_a.csv \
         --datasets DFD --workers 4 \
         --output artifacts/decode_health_dfd.csv
+
+    python scripts/scan_decode_health.py \
+        --manifest artifacts/manifests/celeb_phase_a_revised_1to2_merged.csv \
+        --datasets CelebDFv3 --splits train val --min-frames 32 --workers 4 \
+        --output artifacts/v2_revised/decode_health.csv
 """
 
 import argparse
@@ -74,28 +79,36 @@ def resolve_roots(overrides):
 
 
 def probe(video_path, timeout):
-    """Decode the whole file and return (verdict, message count, first, seconds).
+    """Decode the whole file and report errors and actual output frame count.
 
     ``-f null -`` decodes every frame and throws the output away, which is what
     makes the damaged bytes reachable. ``-v error`` keeps the banner out.
     """
-    command = ["ffmpeg", "-v", "error", "-i", str(video_path), "-f", "null", "-"]
+    command = ["ffmpeg", "-v", "error", "-progress", "pipe:1",
+               "-i", str(video_path), "-map", "0:v:0", "-an",
+               "-vsync", "0", "-f", "null", "-"]
     started = time.time()
     try:
         finished = subprocess.run(
-            command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=timeout)
     except subprocess.TimeoutExpired:
-        return "timeout", -1, "decode exceeded {}s".format(timeout), time.time() - started
+        return "timeout", -1, "decode exceeded {}s".format(timeout), time.time() - started, -1
     lines = [line.strip() for line in
              finished.stderr.decode("utf-8", "replace").splitlines() if line.strip()]
     elapsed = time.time() - started
+    frame_lines = [line.partition("=")[2] for line in
+                   finished.stdout.decode("utf-8", "replace").splitlines()
+                   if line.startswith("frame=")]
+    decoded_frames = int(frame_lines[-1]) if frame_lines else -1
+    if finished.returncode != 0:
+        return "corrupt", len(lines), (lines or ["ffmpeg exited unsuccessfully"])[0][:200], elapsed, decoded_frames
     if not lines:
-        return "ok", 0, "", elapsed
+        return "ok", 0, "", elapsed, decoded_frames
     fatal = [line for line in lines
              if any(marker.lower() in line.lower() for marker in FATAL_MARKERS)]
     verdict = "corrupt" if fatal else "warning"
-    return verdict, len(lines), (fatal or lines)[0][:200], elapsed
+    return verdict, len(lines), (fatal or lines)[0][:200], elapsed, decoded_frames
 
 
 def two_proportion_z(bad_a, total_a, bad_b, total_b):
@@ -125,6 +138,8 @@ def main():
     parser.add_argument("--timeout", type=int, default=120,
                         help="Seconds before a single file is given up on.")
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--min-frames", type=int, default=None,
+                        help="Flag videos with fewer than this many fully decoded frames.")
     parser.add_argument("--output", default="artifacts/decode_health.csv")
     args = parser.parse_args()
 
@@ -156,18 +171,27 @@ def main():
     def work(row):
         path = roots[row["dataset"]] / row["path"]
         if not path.exists():
-            return row, ("missing", -1, "file not found", 0.0)
+            return row, ("missing", -1, "file not found", 0.0, -1)
         return row, probe(path, args.timeout)
 
     results, started = [], time.time()
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         for index, (row, outcome) in enumerate(pool.map(work, rows), start=1):
-            verdict, count, message, elapsed = outcome
+            verdict, count, message, elapsed, decoded_frames = outcome
+            if args.min_frames is not None and verdict in ("ok", "warning"):
+                if decoded_frames < 0:
+                    verdict = "unverified"
+                    message = "ffmpeg did not report a decoded frame count"
+                elif decoded_frames < args.min_frames:
+                    verdict = "short"
+                    message = "decoded {} frames; need {}".format(
+                        decoded_frames, args.min_frames)
             results.append({
                 "dataset": row["dataset"], "split": row["split"],
                 "class_name": row["class_name"], "label": row["label"],
                 "path": row["path"], "verdict": verdict,
                 "ffmpeg_messages": count, "first_message": message,
+                "decoded_frames": decoded_frames,
                 "decode_seconds": round(elapsed, 2),
             })
             if index % 50 == 0 or index == len(rows):
@@ -192,7 +216,7 @@ def main():
         entry["videos"] += 1
         if item["verdict"] == "corrupt":
             entry["corrupt"] += 1
-        elif item["verdict"] in ("timeout", "missing"):
+        elif item["verdict"] in ("timeout", "missing", "short", "unverified"):
             entry["stalled"] += 1
 
     print("\n{:<12} {:<10} {:>7} {:>9} {:>9} {:>8}".format(

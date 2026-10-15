@@ -193,6 +193,82 @@ class BalancedBatchSampler(Sampler):
             yield batch
 
 
+class PoolPassBatchSampler(Sampler):
+    """One pass over the whole training pool per epoch, in full random batches.
+
+    Every video is drawn once per epoch; when the pool does not divide into
+    whole batches, the last batch is topped up in the pool's class proportion
+    from the rest of the pool, so only those few repeat. The class mix of a
+    batch is whatever the shuffle gives, except that a batch missing a class
+    swaps one clip with a batch that holds at least two of it. The real-clip
+    count of every batch is kept in `last_real_counts` for the epoch log.
+    """
+
+    def __init__(self, records, batch_size, seed=42):
+        self.batch_size, self.seed, self.epoch = int(batch_size), int(seed), 0
+        self.is_real = np.asarray([row["class_name"] == "real" for row in records])
+        if self.batch_size < 2:
+            raise ValueError("Batches need room for both classes.")
+        batches = len(self)
+        if min(self.is_real.sum(), (~self.is_real).sum()) < batches:
+            raise ValueError("Each class needs at least one video per batch ({}).".format(batches))
+        self.last_real_counts = []
+
+    def set_epoch(self, epoch):
+        self.epoch = int(epoch)
+
+    def __len__(self):
+        return int(np.ceil(len(self.is_real) / float(self.batch_size)))
+
+    def _repair(self, batches, rng):
+        for batch in batches:
+            for wanted in (True, False):
+                if any(self.is_real[index] == wanted for index in batch):
+                    continue
+                for donor_id in rng.permutation(len(batches)):
+                    donor = batches[donor_id]
+                    givers = [position for position, index in enumerate(donor)
+                              if self.is_real[index] == wanted and index not in batch]
+                    if sum(self.is_real[index] == wanted for index in donor) < 2 or not givers:
+                        continue
+                    takers = [position for position, index in enumerate(batch)
+                              if index not in donor]
+                    if not takers:
+                        continue
+                    give, take = givers[rng.randint(len(givers))], takers[rng.randint(len(takers))]
+                    donor[give], batch[take] = batch[take], donor[give]
+                    break
+                else:
+                    raise RuntimeError("No batch could donate a missing class.")
+
+    def __iter__(self):
+        rng = np.random.RandomState(self.seed + self.epoch)
+        order = rng.permutation(len(self.is_real)).tolist()
+        shortfall = len(self) * self.batch_size - len(order)
+        if shortfall:
+            tail = set(order[len(order) - (self.batch_size - shortfall):])
+            eligible = {
+                is_real: [index for index in order
+                          if index not in tail and bool(self.is_real[index]) == is_real]
+                for is_real in (True, False)
+            }
+            minimum_real = max(0, shortfall - len(eligible[False]))
+            maximum_real = min(shortfall, len(eligible[True]))
+            real_extra = int(np.clip(round(shortfall * float(self.is_real.mean())),
+                                     minimum_real, maximum_real))
+            extras = (rng.choice(eligible[True], real_extra, replace=False).tolist() +
+                      rng.choice(eligible[False], shortfall - real_extra,
+                                 replace=False).tolist())
+            rng.shuffle(extras)
+            order.extend(int(index) for index in extras)
+        batches = [order[start:start + self.batch_size]
+                   for start in range(0, len(order), self.batch_size)]
+        self._repair(batches, rng)
+        self.last_real_counts = [int(self.is_real[batch].sum()) for batch in batches]
+        for batch in batches:
+            yield [int(index) for index in batch]
+
+
 def dataset_balanced_sampler(records, seed, samples_per_dataset="max",
                             group_keys=("dataset",), stratify_key=None):
     return GroupBalancedEpochSampler(

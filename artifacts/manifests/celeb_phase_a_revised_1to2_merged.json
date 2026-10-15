@@ -1,0 +1,40 @@
+{
+  "dataset": "CelebDFv3",
+  "seed": 42,
+  "fake_per_real_training_video": 2,
+  "selection_rule": "method-proportional, source-diverse deterministic hash order",
+  "validation_rule": "original val and test merged; no independent test",
+  "counts": {
+    "train:fake": 1246,
+    "train:real": 623,
+    "val:fake": 16236,
+    "val:real": 267
+  },
+  "train_fake_method_counts": {
+    "FaceReenact/DaGAN": 46,
+    "FaceReenact/FSRT": 46,
+    "FaceReenact/HyperReenact": 46,
+    "FaceReenact/LIA": 46,
+    "FaceReenact/LivePortrait": 45,
+    "FaceReenact/MCNET": 45,
+    "FaceReenact/TPSMM": 45,
+    "FaceSwap/BlendFace": 45,
+    "FaceSwap/Celeb-DF-v2": 130,
+    "FaceSwap/GHOST": 45,
+    "FaceSwap/HifiFace": 45,
+    "FaceSwap/InSwapper": 45,
+    "FaceSwap/MobileFaceSwap": 46,
+    "FaceSwap/SimSwap": 46,
+    "FaceSwap/UniFace": 45,
+    "TalkingFace/AniTalker": 70,
+    "TalkingFace/EDTalk": 67,
+    "TalkingFace/EchoMimic": 69,
+    "TalkingFace/FLOAT": 70,
+    "TalkingFace/IP_LAP": 69,
+    "TalkingFace/Real3DPortrait": 65,
+    "TalkingFace/SadTalker": 70
+  },
+  "train_fake_source_families": 413,
+  "source_family_overlap": 0,
+  "source_manifest": "artifacts\\manifests\\combined_manifest_p05.csv"
+}

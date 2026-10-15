@@ -21,6 +21,10 @@ class MissingFaceCacheError(RuntimeError):
     """Required protocol face detections are absent; this must stop a run."""
 
 
+class ShortVideoError(RuntimeError):
+    """A strict contiguous-clip protocol cannot use a video this short."""
+
+
 def preflight_face_cache(records, config, limit=10):
     """Fail before training when a face-mode manifest lacks cached detections."""
     data = config.get("data", config)
@@ -41,6 +45,22 @@ def preflight_face_cache(records, config, limit=10):
                 len(missing), len(records), min(len(missing), int(limit)), preview
             )
         )
+    if data.get("require_full_clip", False):
+        required = int(data["clip_length"])
+        short = []
+        for row in records:
+            path = cache_root / row["dataset"] / (Path(row["path"]).as_posix() + ".npz")
+            with np.load(path) as cached:
+                count = int(cached["frame_count"])
+            if count < required:
+                short.append("{} ({} frames)".format(row["path"], count))
+        if short:
+            raise ShortVideoError(
+                "Strict {}-frame clip preflight failed: {} of {} videos are too short. "
+                "First {}: {}. Repair the source video/cache or revise the manifest "
+                "before training; repeating frames would violate the protocol.".format(
+                    required, len(short), len(records), min(len(short), int(limit)),
+                    "; ".join(short[:int(limit)])))
     return {"required": True, "checked": len(records), "missing": 0}
 
 
@@ -82,6 +102,7 @@ class VideoClipDataset(Dataset):
         self.dataset_roots = {name: Path(root) for name, root in dataset_roots.items()}
         self.training = bool(training)
         self.clip_length = int(config["clip_length"])
+        self.require_full_clip = bool(config.get("require_full_clip", False))
         self.train_clip_strides = tuple(int(value) for value in config.get("train_clip_strides", [1]))
         self.eval_clip_stride = int(config.get("eval_clip_stride", 1))
         default_clips = 1 if self.training else int(config.get("eval_clips_per_video", 1))
@@ -279,6 +300,9 @@ class VideoClipDataset(Dataset):
         """Return one random training clip or deterministic evaluation clips."""
         if frame_count <= 0:
             raise RuntimeError("Video reports no decodable frames.")
+        if getattr(self, "require_full_clip", False) and frame_count < self.clip_length:
+            raise ShortVideoError("Video has {} frames; {} distinct consecutive frames "
+                                  "are required.".format(frame_count, self.clip_length))
         if self.training and not self.deterministic_clips:
             stride = int(np.random.choice(self.train_clip_strides))
             max_start = self._max_start(frame_count, self.clip_length, stride)
@@ -503,7 +527,7 @@ class VideoClipDataset(Dataset):
         return self.normalize(self.to_tensor(image))
 
     @staticmethod
-    def _decode_clips(capture, video_path, clip_indices):
+    def _decode_clips(capture, video_path, clip_indices, require_full_clip=False):
         """Seek once per clip, then decode sequentially to preserve frame order.
 
         Returns None when the seek lands past the last decodable frame, which
@@ -523,6 +547,8 @@ class VideoClipDataset(Dataset):
                 # FFmpeg's interrupt callback fires on timeout after OpenCV has
                 # already set the success flag.
                 if not ok or frame is None:
+                    if require_full_clip:
+                        return None
                     if previous is None:
                         return None
                     frame = previous.copy()
@@ -548,7 +574,8 @@ class VideoClipDataset(Dataset):
         return count
 
     @staticmethod
-    def _decode_clips_sequential(capture, video_path, clip_indices):
+    def _decode_clips_sequential(capture, video_path, clip_indices,
+                                 require_full_clip=False):
         """Decode every clip in one forward pass, never seeking mid-video.
 
         `grab` skips colour conversion for frames no clip wants, so the extra
@@ -575,6 +602,10 @@ class VideoClipDataset(Dataset):
                 "corrupt: {}".format(video_path)
             )
         available = sorted(frames)
+        if require_full_clip and any(index not in frames for index in wanted):
+            raise ShortVideoError(
+                "Video cannot decode every requested frame of a strict clip: {}"
+                .format(video_path))
         clips = []
         for indices in clip_indices:
             clip = []
@@ -612,9 +643,10 @@ class VideoClipDataset(Dataset):
         frame_count = self.frame_count_cache.get(key)
         if frame_count is None:
             frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-        clip_indices = self.clip_indices(frame_count)
         try:
-            decoded_clips = self._decode_clips(capture, video_path, clip_indices)
+            clip_indices = self.clip_indices(frame_count)
+            decoded_clips = self._decode_clips(
+                capture, video_path, clip_indices, self.require_full_clip)
             if decoded_clips is None:
                 # Metadata or the seek index lied. Measure the real length once,
                 # remember it for later epochs, and decode without seeking.
@@ -627,7 +659,7 @@ class VideoClipDataset(Dataset):
                 self.frame_count_cache[key] = measured
                 clip_indices = self.clip_indices(measured)
                 decoded_clips = self._decode_clips_sequential(
-                    capture, video_path, clip_indices
+                    capture, video_path, clip_indices, self.require_full_clip
                 )
         finally:
             capture.release()
