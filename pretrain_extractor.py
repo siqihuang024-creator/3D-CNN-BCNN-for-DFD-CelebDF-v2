@@ -77,6 +77,12 @@ def main():
         parser.error("run-suffix must contain only letters, digits, underscores or hyphens.")
 
     config = apply_experiment(load_config(args.config), args.matrix, args.experiment)
+    if (config["train"].get("epoch_protocol") == "pool_pass" and
+            int(config["data"].get("selection_clips_per_video", 4)) !=
+            int(config["data"].get("eval_clips_per_video", 8))):
+        raise ValueError("The revised protocol requires the same clips per "
+                         "video for selection-threshold calibration and full "
+                         "validation accuracy.")
     if args.max_epochs is not None:
         config["train"]["epochs"] = args.max_epochs
     if args.seed is not None:
@@ -292,11 +298,23 @@ def main():
         # different things -- clips per epoch against validation videos -- and
         # a throughput computed over their sum belongs to neither.
         train_seconds = time.time() - started
+        if isinstance(sampler, PoolPassBatchSampler) and skipped_training_paths:
+            raise RuntimeError("Incomplete pool-pass epoch: {} training videos "
+                               "could not be decoded; first paths: {}."
+                               .format(len(skipped_training_paths),
+                                       skipped_training_paths[:10]))
         scored = score_deterministic(
             extractor, head, val_loader, device,
             clip_chunk_size=int(config["data"].get("eval_clip_chunk_size", 4)),
             use_amp=use_amp,
             limit=None)
+        if isinstance(sampler, PoolPassBatchSampler) and (
+                len(scored["labels"]) != len(val_records) or
+                scored["skipped_unreadable"]):
+            raise RuntimeError("Incomplete selection validation: scored {} of {} "
+                               "videos; skipped {}."
+                               .format(len(scored["labels"]), len(val_records),
+                                       scored["skipped_paths"][:10]))
         labels, anomaly = scored["labels"], -scored["logits"]
         threshold = calibrate_threshold(anomaly[labels == 1],
                                         config["train"].get("calibration_fpr", 0.05))
@@ -353,9 +371,11 @@ def main():
         save_history(history, log_dir)
         if optimizer_updates:
             scheduler.step()
-        print("val AUROC={:.4f}, fake AP={:.4f} ({:.2f}x), real AP={:.4f} "
+        print("selection AUROC={:.4f}, accuracy={:.4f}, balanced accuracy={:.4f}, "
+              "fake AP={:.4f} ({:.2f}x), real AP={:.4f} "
               "({:.2f}x), Macro-AP(real/fake)={:.4f}, embedding-var={:.3g}".format(
-              metrics["auroc"], metrics["fake_average_precision"],
+              metrics["auroc"], metrics["accuracy"], metrics["balanced_accuracy"],
+              metrics["fake_average_precision"],
               metrics["fake_ap_lift"], metrics["real_average_precision"],
               metrics["real_ap_lift"], metrics["macro_average_precision_real_fake"],
               metrics["embedding_variance_mean"]))

@@ -20,6 +20,10 @@ data:
   selection_clips_per_video: 8
   selection_max_fakes_per_dataset: 1000
   selection_seed: 42
+  # Additional 1:2 development report from the full scored set. Its fake
+  # videos exclude the 1,000 fakes used for checkpoint selection.
+  fixed_ratio_validation_fake_per_real: 2
+  fixed_ratio_validation_seed: 43
   eval_clips_per_video: 8
   eval_clip_chunk_size: 4
   # No augmentation in the revised protocol: clips are never flipped.

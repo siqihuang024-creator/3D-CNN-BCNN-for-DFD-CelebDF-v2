@@ -17,7 +17,8 @@ sys.path.insert(0, str(ROOT / "src"))
 from video_bcnn.data import (load_manifest, preflight_face_cache, seed_worker,
                              skip_unreadable_collate)
 from video_bcnn.evaluation import score_bayesian, score_deterministic
-from video_bcnn.experiment import active_records, make_dataset, select_records
+from video_bcnn.experiment import (active_records, capped_validation_records,
+                                   make_dataset, select_records)
 from video_bcnn.metrics import (calibrate_threshold, clustered_auroc_interval,
                                 detection_metrics)
 from video_bcnn.model import DeterministicHead, build_feature_extractor, freeze_extractor
@@ -68,6 +69,81 @@ class ShuffledFrameLoader:
             if frame_indices is not None:
                 batch["clip_frame_indices"] = frame_indices
             yield batch
+
+
+def fixed_ratio_development_subset(values, records, fake_per_real,
+                                   selection_seed, selection_max_fakes,
+                                   subset_seed):
+    """Select scored videos for a fixed-ratio development report.
+
+    Fakes used to select the checkpoint are excluded from this diagnostic
+    subset. The real videos still overlap threshold calibration, so this is
+    not an independent test set.
+    """
+    if int(fake_per_real) < 1:
+        raise ValueError("fake_per_real must be positive.")
+    datasets = {row["dataset"] for row in records}
+    if len(datasets) != 1:
+        raise ValueError("Fixed-ratio development reporting expects one dataset.")
+
+    def key(dataset, path):
+        return (str(dataset), str(path).replace("\\", "/"))
+
+    selected_for_checkpoint = capped_validation_records(
+        records, int(selection_seed), selection_max_fakes)
+    selection_fakes = {
+        key(row["dataset"], row["path"])
+        for row in selected_for_checkpoint if int(row["label"]) == 0
+    }
+    available = [
+        row for row in records
+        if int(row["label"]) == 1 or
+        key(row["dataset"], row["path"]) not in selection_fakes
+    ]
+    real_count = sum(int(row["label"]) == 1 for row in available)
+    fake_count = real_count * int(fake_per_real)
+    if real_count == 0 or sum(int(row["label"]) == 0 for row in available) < fake_count:
+        raise ValueError("Not enough held-out fake videos for the fixed-ratio report.")
+    chosen = capped_validation_records(available, int(subset_seed), fake_count)
+    if len(chosen) != real_count + fake_count:
+        raise RuntimeError("The fixed-ratio development subset is incomplete.")
+
+    count = len(values["labels"])
+    if len(values["datasets"]) != count or len(values["relative_paths"]) != count:
+        raise ValueError("Scored video metadata is incomplete.")
+    lookup = {
+        key(dataset, path): index
+        for index, (dataset, path) in enumerate(zip(values["datasets"],
+                                                    values["relative_paths"]))
+    }
+    if len(lookup) != count:
+        raise ValueError("Scored video IDs are not unique.")
+    indices = []
+    for row in chosen:
+        video_key = key(row["dataset"], row["path"])
+        if video_key not in lookup:
+            raise ValueError("Fixed-ratio video was not scored: {}".format(video_key))
+        index = lookup[video_key]
+        if int(values["labels"][index]) != int(row["label"]):
+            raise ValueError("Manifest/score label mismatch: {}".format(video_key))
+        indices.append(index)
+    subset = {}
+    for name, item in values.items():
+        if isinstance(item, np.ndarray) and item.ndim and len(item) == count:
+            subset[name] = item[indices]
+        elif isinstance(item, list) and len(item) == count:
+            subset[name] = [item[index] for index in indices]
+        else:
+            subset[name] = item
+    return subset, {
+        "fake_per_real": int(fake_per_real),
+        "subset_seed": int(subset_seed),
+        "selection_seed": int(selection_seed),
+        "selection_fake_overlap": 0,
+        "selection_real_overlap": real_count,
+        "sampling": "method-stratified, fixed before model comparison",
+        "limitation": "Development subset; real videos overlap checkpoint selection and threshold calibration.",
+    }
 
 
 def evaluate(values, threshold, draws, seed):
@@ -258,6 +334,37 @@ def main():
     report = save_evaluation_report(values, metrics, report_dir, args.split,
                                     report_name=report_name,
                                     write_legacy=not (args.shuffle_frames or args.shuffle_sequence))
+    ratio = config["data"].get("fixed_ratio_validation_fake_per_real")
+    if args.split == "val" and args.max_videos is None and ratio is not None:
+        ratio_values, sampling = fixed_ratio_development_subset(
+            values, records, int(ratio),
+            int(config["data"].get("selection_seed", seed)),
+            config["data"].get("selection_max_fakes_per_dataset"),
+            int(config["data"].get("fixed_ratio_validation_seed", seed + 1)))
+        ratio_metrics = evaluate(
+            ratio_values, float(threshold), args.bootstrap_draws, seed)
+        ratio_metrics.update({
+            "split": args.split, "stage": stage,
+            "checkpoint": str(Path(args.checkpoint).resolve()),
+            "experiment": experiment, "seed": seed,
+            "evaluation_name": "{}_1to{}".format(report_name, ratio),
+            "evaluation_scope": "development-fixed-ratio-subset",
+            "sampling": sampling,
+            "frame_order": metrics["frame_order"],
+            "threshold_source": metrics["threshold_source"],
+            "num_videos_requested": len(ratio_values["labels"]),
+            "num_videos_scored": len(ratio_values["labels"]),
+            "skipped_videos": [],
+        })
+        ratio_report = save_evaluation_report(
+            ratio_values, ratio_metrics, report_dir, args.split,
+            report_name=ratio_metrics["evaluation_name"], write_legacy=False)
+        print("Fixed 1:{} development subset: {} real + {} fake; accuracy={:.4f}, "
+              "balanced accuracy={:.4f}".format(
+                  ratio, int((ratio_values["labels"] == 1).sum()),
+                  int((ratio_values["labels"] == 0).sum()),
+                  ratio_metrics["accuracy"], ratio_metrics["balanced_accuracy"]))
+        print("Fixed-ratio report: {}".format(ratio_report))
     if args.export_embeddings and "embeddings" in values:
         np.savez_compressed(report_dir / "{}_embeddings.npz".format(args.split),
                             embeddings=values["embeddings"], labels=values["labels"],
@@ -268,6 +375,11 @@ def main():
     print("AP-fake={:.4f}, AP-real={:.4f}, Macro-AP (real/fake)={:.4f}".format(
         metrics["fake_average_precision"], metrics["real_average_precision"],
         metrics["macro_average_precision_real_fake"]))
+    print("{} accuracy={:.4f}, balanced accuracy={:.4f}, observed FPR={:.4f}, "
+          "TPR={:.4f}".format(
+              args.split, metrics["accuracy"], metrics["balanced_accuracy"],
+              metrics["observed_false_positive_rate"],
+              metrics["observed_true_positive_rate"]))
     print("Report: {}".format(report))
     return 0
 

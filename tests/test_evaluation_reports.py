@@ -61,6 +61,46 @@ class ScoreExportTests(unittest.TestCase):
             self.assertTrue((Path(directory) / "val_scores.csv").is_file())
 
 
+class FixedRatioDevelopmentReportTests(unittest.TestCase):
+    def test_subset_is_fixed_1to2_and_excludes_selection_fakes(self):
+        from evaluate_3d_bcnn import fixed_ratio_development_subset
+        from video_bcnn.experiment import capped_validation_records
+
+        records = ([{"dataset": "CelebDFv3", "path": "real{}.mp4".format(i),
+                     "label": "1", "method": "real"} for i in range(3)] +
+                   [{"dataset": "CelebDFv3", "path": "fake{}.mp4".format(i),
+                     "label": "0", "method": "A" if i < 6 else "B"}
+                    for i in range(12)])
+        ordered = list(reversed(records))
+        values = {
+            "labels": np.asarray([int(row["label"]) for row in ordered]),
+            "datasets": np.asarray([row["dataset"] for row in ordered]),
+            "relative_paths": [row["path"] for row in ordered],
+            "scores": np.arange(len(ordered), dtype=float),
+            "clip_scores": [[float(i)] for i in range(len(ordered))],
+        }
+        subset, sampling = fixed_ratio_development_subset(
+            values, records, fake_per_real=2, selection_seed=42,
+            selection_max_fakes=4, subset_seed=43)
+        selected_for_checkpoint = capped_validation_records(records, 42, 4)
+        selection_fakes = {row["path"] for row in selected_for_checkpoint
+                           if int(row["label"]) == 0}
+        self.assertEqual(len(subset["labels"]), 9)
+        self.assertEqual(int((subset["labels"] == 1).sum()), 3)
+        self.assertEqual(int((subset["labels"] == 0).sum()), 6)
+        self.assertFalse(selection_fakes.intersection(subset["relative_paths"]))
+        self.assertEqual(sampling["selection_fake_overlap"], 0)
+        for path, score, clips in zip(subset["relative_paths"], subset["scores"],
+                                      subset["clip_scores"]):
+            original = ordered.index(next(row for row in ordered if row["path"] == path))
+            self.assertEqual(score, float(original))
+            self.assertEqual(clips, [float(original)])
+        repeated, _ = fixed_ratio_development_subset(
+            values, records, fake_per_real=2, selection_seed=42,
+            selection_max_fakes=4, subset_seed=43)
+        self.assertEqual(subset["relative_paths"], repeated["relative_paths"])
+
+
 class FrameIndexCopyTests(unittest.TestCase):
     def test_frame_indices_do_not_alias_the_batch_tensor(self):
         import torch

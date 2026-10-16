@@ -38,6 +38,15 @@ retrained under this protocol before they are compared with each other.
   method-stratified set of 1,000 fakes, eight clips per video -- the same as
   full validation, so the saved threshold applies to identically computed scores. Full validation
   scores all 16,503 videos using eight clips per video after training.
+- The full development set is **not** 1:2: it contains 267 real and 16,236
+  fake videos (about 1:60.8). The evaluator also writes a fixed-ratio report
+  using all 267 real and 534 method-stratified fakes (1:2), selected with seed
+  43 from fakes outside the 1,000-video checkpoint-selection fake subset.
+  Both model variants use the same manifest and seeds, so they use the same
+  801 videos. This report is computed from the already scored full set; it
+  requires no second GPU pass. The 267 real videos still overlap checkpoint
+  selection and threshold calibration, so it remains a development result,
+  not an independent test.
 
 ## Build and run on the GPU host
 
@@ -59,13 +68,34 @@ python pretrain_extractor.py \
   --experiment E2_interleave --seed 42
 
 # After training: full development-validation scoring (all 16,503 videos).
-python evaluate_3d_bcnn.py   --config configs/v2/phase_a_celeb_revised.yaml   --manifest artifacts/manifests/celeb_phase_a_revised_1to2_merged.csv   --checkpoint artifacts/v2_revised/celebdfv3_e2_celeb_gap_seed42/checkpoints/best.pt   --split val --expected-videos 16503 --bootstrap-draws 2000 --experiment E2_celeb
+python evaluate_3d_bcnn.py \
+  --config configs/v2/phase_a_celeb_revised.yaml \
+  --manifest artifacts/manifests/celeb_phase_a_revised_1to2_merged.csv \
+  --checkpoint artifacts/v2_revised/celebdfv3_e2_celeb_gap_seed42/checkpoints/best.pt \
+  --split val --expected-videos 16503 --bootstrap-draws 2000 \
+  --experiment E2_celeb
+
+python evaluate_3d_bcnn.py \
+  --config configs/v2/phase_a_celeb_revised.yaml \
+  --manifest artifacts/manifests/celeb_phase_a_revised_1to2_merged.csv \
+  --checkpoint artifacts/v2_revised/celebdfv3_e2_interleave_gap_seed42/checkpoints/best.pt \
+  --split val --expected-videos 16503 --bootstrap-draws 2000 \
+  --experiment E2_interleave
 ```
 
-Report accuracy, balanced accuracy, TPR, TNR and the confusion matrix at the
-saved selection-set threshold (stating the observed FPR) next to AUROC and both
-APs. The development set is 98.4% fake, so all-fake already scores 98.4%
-accuracy; accuracy is never read on its own.
+The evaluator writes both `full_val.json` and `full_val_1to2.json`,
+with corresponding video-score CSVs. **Both reports calculate accuracy and a
+confusion matrix** at the same saved selection-set threshold, alongside AUROC,
+both APs, balanced accuracy, TPR, TNR and observed FPR. The complete
+16,503-video development set is the primary evaluation scope; its accuracy is
+`(TP + TN) / 16,503` and must be reported. The fixed 1:2 subset is a
+supplementary prevalence check, not a replacement for full-set accuracy.
+The full set is 98.4% fake, so an all-fake classifier already scores 98.4%
+raw accuracy there. On the 1:2 subset, an all-fake classifier scores 66.7%.
+Interpret both accuracy values with their class proportions, TPR, TNR and
+balanced accuracy. The fixed-ratio report is descriptive development
+validation because its real videos were also used for model selection and
+threshold calibration.
 
 The model-selection runs use separate paths under `artifacts/v2_revised/`.
 Before a full run, cache face boxes for the newly merged validation rows and
@@ -85,9 +115,11 @@ manifest. The pool-pass face-cache preflight also checks the entire merged
 validation set, but cache `frame_count` is only container metadata and cannot
 replace the full-decode scan. The local copy of
 `REAL/Real_WEB/id27_0005.mp4` declares and decodes only one frame. Check the
-GPU-host copy: if it is also short, repair it or replace this training video
-with another real training video from the original P0.5 split and regenerate
-the revised manifest and caches. Do not silently drop it, as that would change
-the agreed 623-real / 1,246-fake pool. The old 8,205-video results use a
+GPU-host copy: if it is also short, restore the complete source video and
+regenerate its face cache. If restoration is impossible, revise the manifest
+and the agreed training counts explicitly before running the full experiment;
+the P0.5 train split contains only the 623 real videos already selected, so
+there is no unused train real to substitute. Do not silently drop it. The old
+8,205-video results use a
 different data and clip protocol and are not directly comparable to these
 future 16,503-video results.
