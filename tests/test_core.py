@@ -314,7 +314,7 @@ class BatchAndMetricTests(unittest.TestCase):
 
     def test_pool_pass_covers_every_video_with_both_classes_per_batch(self):
         from collections import Counter
-        records = [{"class_name": "real"}] * 623 + [{"class_name": "fake"}] * 1246
+        records = [{"class_name": "real"}] * 622 + [{"class_name": "fake"}] * 1244
         sampler = PoolPassBatchSampler(records, batch_size=8, seed=42)
         mixes = set()
         for epoch in (1, 2, 3):
@@ -324,11 +324,11 @@ class BatchAndMetricTests(unittest.TestCase):
             self.assertTrue(all(len(batch) == 8 and len(set(batch)) == 8 for batch in batches))
             uses = Counter(index for batch in batches for index in batch)
             self.assertEqual(set(uses), set(range(len(records))))
-            self.assertEqual(sum(count - 1 for count in uses.values()), 3)
+            self.assertEqual(sum(count - 1 for count in uses.values()), 6)
             repeated = [index for index, count in uses.items() if count == 2]
-            self.assertEqual(sum(index < 623 for index in repeated), 1)
-            self.assertEqual(sum(index >= 623 for index in repeated), 2)
-            real_counts = [sum(index < 623 for index in batch) for batch in batches]
+            self.assertEqual(sum(index < 622 for index in repeated), 2)
+            self.assertEqual(sum(index >= 622 for index in repeated), 4)
+            real_counts = [sum(index < 622 for index in batch) for batch in batches]
             self.assertTrue(all(1 <= count <= 7 for count in real_counts))
             self.assertEqual(sum(real_counts), 624)
             self.assertEqual(sampler.last_real_counts, real_counts)

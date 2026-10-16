@@ -55,7 +55,7 @@ train:
   run_dir: artifacts/v2_revised/celeb_e4_gap_seed42
   epochs: 60
   physical_batch_size: 8
-  # One pass over the 623 real + 1,246 fake pool per epoch (234 batches),
+  # One pass over the 622 real + 1,244 fake pool per epoch (234 batches),
   # random class mix with at least one real and one fake clip per batch.
   epoch_protocol: pool_pass
   gradient_accumulation_steps: 1

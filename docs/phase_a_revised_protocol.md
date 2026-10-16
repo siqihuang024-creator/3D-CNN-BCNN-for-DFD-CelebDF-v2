@@ -7,10 +7,14 @@ retrained under this protocol before they are compared with each other.
 ## Data and sampling
 
 - Start from `artifacts/manifests/combined_manifest_p05.csv` (seed 42).
-- Keep all 623 real training videos. Select 1,246 fake training videos without
-  replacement, preserving the original fake-method proportions and preferring
-  distinct real source clips. The resulting 22 fake methods and counts are
-  recorded in the adjacent manifest summary JSON.
+- The GPU-host decode scan found that the sole copy of
+  `REAL/Real_WEB/id27_0005.mp4` contains only one decoded frame. Explicitly
+  exclude this unusable training real video when building the manifest.
+  Keep the remaining 622 real training videos and select 1,244 fake training
+  videos without replacement (1:2), preserving the original fake-method
+  proportions and preferring distinct real source clips. The excluded path,
+  fake methods, and counts are recorded in the adjacent manifest summary JSON.
+  The original P0.5 manifest and source video are not changed.
 - Merge the original validation and test source families into one development
   validation set: 267 real and 16,236 fake videos. No independent test set
   remains in this CelebDFv3 protocol. No video path or original source-video
@@ -20,19 +24,18 @@ retrained under this protocol before they are compared with each other.
   frames, at fixed evenly spaced start positions. Strict clip preflight rejects
   source videos with fewer than 32 frames rather than repeating the last frame.
 - Physical batch size is 8, plain BCE loss with no class weighting. Each
-  epoch is **one pass over the whole training pool** (623 real + 1,246 fake =
-  1,869 videos, 234 batches): the pool is shuffled and cut into batches of 8;
-  the last batch is topped up with 1 real and 2 fake videos drawn at random
-  from the rest of the pool, so only those 3 repeat within an epoch. Each
+  epoch is **one pass over the whole training pool** (622 real + 1,244 fake =
+  1,866 videos, 234 batches): the pool is shuffled and cut into batches of 8;
+  the last batch is topped up with 2 real and 4 fake videos drawn at random
+  from the rest of the pool, so only those 6 repeat within an epoch. Each
   epoch has 624 real and 1,248 fake clips. A new clip start is drawn every
   time a video is used.
 - No data augmentation: horizontal flipping is off (`horizontal_flip_probability: 0.0`),
   so the random clip start is the only source of variation between epochs.
 - A batch's class mix is whatever the shuffle gives, except that a batch with
   no real (or no fake) clip swaps one clip with a batch holding at least two of
-  that class. Over 60 epochs at seed 42 the real clips per batch come out as
-  1: 20.1%, 2: 27.9%, 3: 27.5%, 4: 16.4%, 5: 6.4%, 6: 1.5%, 7: 0.2%. Each
-  epoch's histogram is written to `history` as `batch_real_count_histogram`;
+  that class. Each epoch's observed real-clip-count histogram is written to
+  `history` as `batch_real_count_histogram`;
   if 1-real batches turn out to disturb BatchNorm, raise the floor to two.
 - Checkpoint selection uses all 267 real validation videos plus a fixed,
   method-stratified set of 1,000 fakes, eight clips per video -- the same as
@@ -54,7 +57,8 @@ retrained under this protocol before they are compared with each other.
 python scripts/build_phase_a_revised_manifest.py \
   --input artifacts/manifests/combined_manifest_p05.csv \
   --output artifacts/manifests/celeb_phase_a_revised_1to2_merged.csv \
-  --dataset CelebDFv3 --fake-per-real 2 --seed 42
+  --dataset CelebDFv3 --fake-per-real 2 --seed 42 \
+  --exclude-train-real-path REAL/Real_WEB/id27_0005.mp4
 
 # Run each model independently with the same revised config and manifest.
 python pretrain_extractor.py \
@@ -113,13 +117,12 @@ Inspect all non-`ok` rows and every `decoded_frames < 32` row. The scan
 fully decodes each video, so it can take substantial time; it does not edit the
 manifest. The pool-pass face-cache preflight also checks the entire merged
 validation set, but cache `frame_count` is only container metadata and cannot
-replace the full-decode scan. The local copy of
-`REAL/Real_WEB/id27_0005.mp4` declares and decodes only one frame. Check the
-GPU-host copy: if it is also short, restore the complete source video and
-regenerate its face cache. If restoration is impossible, revise the manifest
-and the agreed training counts explicitly before running the full experiment;
-the P0.5 train split contains only the 623 real videos already selected, so
-there is no unused train real to substitute. Do not silently drop it. The old
+replace the full-decode scan. The local and GPU-host copies of
+`REAL/Real_WEB/id27_0005.mp4` both decode only one frame, and the GPU host
+has no second copy in `/root/Datasets`. The manifest command above explicitly
+excludes it; verify the summary says 622 training real and 1,244 training
+fake. Rerun the scan on this regenerated manifest before training, since
+changing the fake quota can change which fake videos are selected. The old
 8,205-video results use a
 different data and clip protocol and are not directly comparable to these
 future 16,503-video results.

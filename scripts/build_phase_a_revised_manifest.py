@@ -29,7 +29,7 @@ def _method_quotas(groups, wanted):
     return quotas
 
 
-def build(rows, dataset, fake_per_real, seed):
+def build(rows, dataset, fake_per_real, seed, excluded_train_real_paths=()):
     selected = [dict(row) for row in rows if row["dataset"] == dataset]
     if not selected or fake_per_real < 1:
         raise ValueError("Dataset must be present and fake_per_real must be positive.")
@@ -37,6 +37,14 @@ def build(rows, dataset, fake_per_real, seed):
         raise ValueError("Expected train, val, and test in the source manifest.")
     train_real = [row for row in selected if row["split"] == "train" and row["class_name"] == "real"]
     train_fake = [row for row in selected if row["split"] == "train" and row["class_name"] == "fake"]
+    excluded = set(excluded_train_real_paths)
+    available = {row["path"] for row in train_real}
+    unknown = excluded - available
+    if unknown:
+        raise ValueError("Excluded paths are not training real videos: {}".format(", ".join(sorted(unknown))))
+    train_real = [row for row in train_real if row["path"] not in excluded]
+    if not train_real:
+        raise ValueError("No training real videos remain after exclusions.")
     wanted = len(train_real) * fake_per_real
     if wanted > len(train_fake):
         raise ValueError("Requested {} fake videos, but only {} are available.".format(wanted, len(train_fake)))
@@ -81,6 +89,7 @@ def build(rows, dataset, fake_per_real, seed):
         "fake_per_real_training_video": fake_per_real,
         "selection_rule": "method-proportional, source-diverse deterministic hash order",
         "validation_rule": "original val and test merged; no independent test",
+        "excluded_train_real_paths": sorted(excluded),
         "counts": {"{}:{}".format(*key): value for key, value in sorted(counts.items())},
         "train_fake_method_counts": dict(sorted(Counter(row["method"] for row in chosen_fake).items())),
         "train_fake_source_families": len(source_counts),
@@ -96,11 +105,14 @@ def main():
     parser.add_argument("--dataset", default="CelebDFv3")
     parser.add_argument("--fake-per-real", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--exclude-train-real-path", action="append", default=[],
+                        help="Exclude one verified unusable real training video by manifest path; repeatable.")
     args = parser.parse_args()
     with open(args.input, newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
         fields = list(rows[0]) if rows else []
-    output, summary = build(rows, args.dataset, args.fake_per_real, args.seed)
+    output, summary = build(rows, args.dataset, args.fake_per_real, args.seed,
+                            excluded_train_real_paths=args.exclude_train_real_path)
     destination = Path(args.output)
     if destination.resolve() == Path(args.input).resolve():
         parser.error("--output must differ from --input; the original manifest is immutable.")
