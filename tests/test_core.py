@@ -21,7 +21,8 @@ from video_bcnn.evaluation import score_bayesian_cached
 from video_bcnn.experiment import (BalancedBatchSampler, GroupBalancedEpochSampler,
                                    PoolPassBatchSampler)
 from video_bcnn.features import FeatureCacheDataset
-from video_bcnn.metrics import calibrate_threshold, detection_metrics
+from video_bcnn.metrics import (calibrate_threshold, detection_metrics,
+                                probability_half_metrics)
 from video_bcnn.model import (DeterministicHead, InterleavedConv3d,
                               MC3FeatureExtractor, ResidualTemporalBlock,
                               Stable3DFeatureExtractor, TemporalAggregator,
@@ -292,6 +293,23 @@ class ProtocolTests(unittest.TestCase):
 
 
 class BatchAndMetricTests(unittest.TestCase):
+    def test_balanced_pool_pass_uses_each_video_once_and_shuffles_order(self):
+        records = ([{"dataset": "CelebDFv3", "class_name": "real"} for _ in range(616)] +
+                   [{"dataset": "CelebDFv3", "class_name": "fake"} for _ in range(616)])
+        sampler = BalancedBatchSampler(records, batch_size=8, seed=42,
+                                       batches_per_epoch=154)
+        sampler.set_epoch(1)
+        batches = list(sampler)
+        self.assertEqual(len(batches), 154)
+        self.assertEqual(sorted(index for batch in batches for index in batch),
+                         list(range(1232)))
+        self.assertTrue(all(sum(index < 616 for index in batch) == 4
+                            for batch in batches))
+        self.assertGreater(len({tuple(index < 616 for index in batch)
+                                for batch in batches}), 1)
+        sampler.set_epoch(2)
+        self.assertNotEqual(batches, list(sampler))
+
     def test_every_physical_batch_is_class_balanced(self):
         records = ([{"dataset": "DFD", "class_name": "real"}] * 3 +
                    [{"dataset": "DFD", "class_name": "fake"}] * 20)
@@ -359,6 +377,23 @@ class BatchAndMetricTests(unittest.TestCase):
         self.assertEqual(metrics["macro_average_precision_real_fake"], 1.0)
         self.assertEqual(metrics["fake_ap_lift"], 2.0)
         self.assertEqual(metrics["fake_ap_gain"], 0.5)
+
+    def test_probability_half_uses_zero_fake_logit_and_reports_fake_f1(self):
+        # The network emits real logits; the evaluation score is their negative.
+        # A fake probability of 0.5 therefore means an anomaly score of zero.
+        labels = np.asarray([1, 1, 0, 0])
+        fake_logits = np.asarray([-2.0, 0.1, -0.1, 2.0])
+        metrics = probability_half_metrics(labels, fake_logits)
+        self.assertEqual(metrics["fake_probability_threshold"], 0.5)
+        self.assertEqual(metrics["threshold"], 0.0)
+        self.assertEqual(metrics["confusion_matrix"], [[1, 1], [1, 1]])
+        self.assertEqual([metrics[key] for key in ("tn", "fp", "fn", "tp")],
+                         [1, 1, 1, 1])
+        self.assertEqual(metrics["accuracy"], 0.5)
+        self.assertEqual(metrics["balanced_accuracy"], 0.5)
+        self.assertEqual(metrics["fake_precision"], 0.5)
+        self.assertEqual(metrics["fake_recall"], 0.5)
+        self.assertEqual(metrics["fake_f1"], 0.5)
 
 
 class DataTests(unittest.TestCase):

@@ -67,21 +67,42 @@ def calibrate_threshold(real_anomaly_scores, false_positive_rate):
     return float(np.quantile(scores, 1.0 - float(false_positive_rate)))
 
 
-def detection_metrics(real_labels, anomaly_scores, threshold, target_fpr=0.05):
+def operating_point_metrics(real_labels, anomaly_scores, threshold):
+    """Video-level decisions at one score threshold; fake is the positive class."""
     labels = np.asarray(real_labels, dtype=np.int64)
     scores = np.asarray(anomaly_scores, dtype=np.float64)
     fake_labels = 1 - labels
     predicted_fake = (scores >= float(threshold)).astype(np.int64)
-    result = {
+    matrix = confusion_matrix(fake_labels, predicted_fake, labels=[0, 1])
+    tn, fp, fn, tp = (int(value) for value in matrix.ravel())
+    return {
         "threshold": float(threshold),
         "accuracy": float(accuracy_score(fake_labels, predicted_fake)),
         "balanced_accuracy": float(balanced_accuracy_score(fake_labels, predicted_fake)),
-        "confusion_matrix": confusion_matrix(fake_labels, predicted_fake, labels=[0, 1]).tolist(),
+        "confusion_matrix": matrix.tolist(),
+        "tn": tn, "fp": fp, "fn": fn, "tp": tp,
         "observed_false_positive_rate": (float(predicted_fake[fake_labels == 0].mean())
                                          if np.any(fake_labels == 0) else math.nan),
         "observed_true_positive_rate": (float(predicted_fake[fake_labels == 1].mean())
                                         if np.any(fake_labels == 1) else math.nan),
+        "fake_precision": tp / (tp + fp) if tp + fp else 0.0,
+        "fake_recall": tp / (tp + fn) if tp + fn else 0.0,
+        "fake_f1": 2 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn else 0.0,
     }
+
+
+def probability_half_metrics(real_labels, fake_anomaly_logits):
+    """Fake sigmoid probability >= 0.5 is anomaly logit >= 0."""
+    result = operating_point_metrics(real_labels, fake_anomaly_logits, 0.0)
+    result["fake_probability_threshold"] = 0.5
+    return result
+
+
+def detection_metrics(real_labels, anomaly_scores, threshold, target_fpr=0.05):
+    labels = np.asarray(real_labels, dtype=np.int64)
+    scores = np.asarray(anomaly_scores, dtype=np.float64)
+    fake_labels = 1 - labels
+    result = operating_point_metrics(labels, scores, threshold)
     fake_rate = float(fake_labels.mean()) if len(fake_labels) else math.nan
     real_rate = 1.0 - fake_rate if len(fake_labels) else math.nan
     result.update({

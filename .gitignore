@@ -23,6 +23,8 @@ artifacts/*
 artifacts/manifests/*
 !artifacts/manifests/*.csv
 !artifacts/manifests/*.json
+# The fixed 60-run protocol is a data split, not a training output.
+!artifacts/manifests/celeb_video_disjoint_seed42/
 checkpoints/
 models/
 weights/

@@ -20,7 +20,7 @@ from video_bcnn.evaluation import score_bayesian, score_deterministic
 from video_bcnn.experiment import (active_records, capped_validation_records,
                                    make_dataset, select_records)
 from video_bcnn.metrics import (calibrate_threshold, clustered_auroc_interval,
-                                detection_metrics)
+                                detection_metrics, probability_half_metrics)
 from video_bcnn.model import DeterministicHead, build_feature_extractor, freeze_extractor
 from video_bcnn.reporting import save_evaluation_report
 from video_bcnn.utils import (load_checkpoint, load_config, override_dataset_roots,
@@ -223,11 +223,26 @@ def main():
     device = resolve_device(runtime.get("device", "cuda"))
     checkpoint = load_checkpoint(args.checkpoint, device)
     config = copy.deepcopy(checkpoint["config"])
+    if (args.split == "test" and checkpoint.get("stage") == "phase_a" and
+            config["train"].get("epoch_protocol") == "balanced_pool_pass" and
+            (args.recalibrate_threshold or checkpoint.get("threshold") is None)):
+        raise ValueError("The 60-group test must use the validation-calibrated "
+                         "threshold saved in the checkpoint; test recalibration is forbidden.")
     config["data"]["dataset_roots"] = runtime["data"]["dataset_roots"]
     config["data"]["num_workers"] = runtime["data"].get("num_workers", 0)
     seed = int(config.get("seed", 42))
     seed_everything(seed)
     records = select_records(active_records(load_manifest(args.manifest), config), args.split)
+    if (checkpoint.get("stage") == "phase_a" and
+            config["train"].get("epoch_protocol") == "balanced_pool_pass" and
+            args.max_videos is None):
+        hash_key = "{}_paths_sha256".format("validation" if args.split == "val" else "test")
+        expected_hash = checkpoint.get("runtime", {}).get(hash_key)
+        actual_hash = hashlib.sha256("\n".join(sorted(
+            row["path"] for row in records)).encode()).hexdigest()
+        if not expected_hash or actual_hash != expected_hash:
+            raise ValueError("The {} video list differs from the fixed list "
+                             "saved in the checkpoint.".format(args.split))
     if args.max_videos is not None:
         half = max(1, int(args.max_videos) // 2)
         records = ([row for row in records if int(row["label"]) == 1][:half] +
@@ -259,7 +274,8 @@ def main():
             extractor.set_sequence_shuffle(seed)
         raw = score_deterministic(
             extractor, head, loader, device,
-            int(config["data"].get("eval_clip_chunk_size", 4)), use_amp=True)
+            int(config["data"].get("eval_clip_chunk_size", 4)),
+            use_amp=config["train"].get("precision", "amp") == "amp")
         values = dict(raw)
         values.update({"scores": -raw["logits"], "means": raw["logits"],
                        "stds": np.zeros_like(raw["logits"]),
@@ -296,6 +312,9 @@ def main():
         threshold = calibrate_threshold(values["scores"][values["labels"] == 1],
                                         config["train"].get("calibration_fpr", 0.05))
     metrics = evaluate(values, float(threshold), args.bootstrap_draws, seed)
+    if stage == "phase_a":
+        metrics["at_fake_probability_0_5"] = probability_half_metrics(
+            values["labels"], values["scores"])
     if args.report_name:
         report_name = args.report_name
     elif args.max_videos is not None:
@@ -380,6 +399,13 @@ def main():
               args.split, metrics["accuracy"], metrics["balanced_accuracy"],
               metrics["observed_false_positive_rate"],
               metrics["observed_true_positive_rate"]))
+    if stage == "phase_a":
+        half = metrics["at_fake_probability_0_5"]
+        print("{} at fake probability 0.5: accuracy={:.4f}, balanced accuracy={:.4f}, "
+              "fake F1={:.4f}, FPR={:.4f}, TPR={:.4f}".format(
+                  args.split, half["accuracy"], half["balanced_accuracy"],
+                  half["fake_f1"], half["observed_false_positive_rate"],
+                  half["observed_true_positive_rate"]))
     print("Report: {}".format(report))
     return 0
 

@@ -1,0 +1,62 @@
+# Pilot protocol: video-path-disjoint split, fixed balanced validation/test,
+# 60 independent method-diverse fake groups. Run with --experiment E2_celeb.
+seed: 42
+device: cuda
+data:
+  active_datasets: [CelebDFv3]
+  dataset_roots:
+    DFD: E:/PhD/Deepfake Video TCN+BCNN/Datasets/DFD-Kaggle
+    CelebDFv3: E:/PhD/Deepfake Video TCN+BCNN/Datasets/CelebDFv3/CelebDFv3
+  frame_mode: face
+  face_crop: true
+  face_margin: 0.50
+  crop_padding: replicate
+  face_box_cache: artifacts/face_cache
+  align_landmarks: true
+  clip_length: 32
+  require_full_clip: true
+  train_clip_strides: [1]
+  eval_clip_stride: 1
+  selection_clips_per_video: 8
+  selection_max_fakes_per_dataset: null
+  eval_clips_per_video: 8
+  eval_clip_chunk_size: 4
+  horizontal_flip_probability: 0.0
+  normalize_mean: [0.485, 0.456, 0.406]
+  normalize_std: [0.229, 0.224, 0.225]
+  train_balance_keys: [dataset, class_name]
+  num_workers: 2
+  persistent_workers: true
+model:
+  architecture: 3d_cnn
+  input_resize: 256
+  center_crop: 256
+  activation: relu
+  norm: batch
+  conv_channels: [16, 24, 32]
+  temporal_kernel_size: 3
+  conv1_spatial_stride: 1
+  stage_pool_type: avg
+  final_pool_type: avg
+  spatial_output_size: 22
+  temporal_head: mean
+  temporal_aggregation: gap
+  temporal_steps: 32
+  feature_dim: 15488
+  deterministic_hidden_dim: 0
+  dropout: 0.2
+train:
+  run_dir: artifacts/v2_video_disjoint/e2_group01_pilot
+  epochs: 60
+  physical_batch_size: 8
+  epoch_protocol: balanced_pool_pass
+  gradient_accumulation_steps: 1
+  precision: fp32
+  learning_rate: 0.0001
+  lr_gamma: 0.95
+  gradient_clip_norm: null
+  calibration_fpr: 0.05
+  early_stopping_enabled: false
+  early_stopping_min_epochs: 20
+  early_stopping_patience: 10
+  early_stopping_min_delta: 0.0
