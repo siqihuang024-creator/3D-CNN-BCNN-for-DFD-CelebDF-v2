@@ -141,3 +141,18 @@ seed and the Git commit used for the run. Do not use `--max-epochs 60` or
 enable early stopping for one group while leaving the others at 100 epochs.
 The validation and test path lists stay fixed. Run directories cannot be reused
 for another independent training, preventing accidental checkpoint overwrite.
+
+After group 04 is complete, run groups 05–30 sequentially in a tmux session:
+
+```bash
+source remote_env.sh
+python scripts/run_phase_a_groups_05_30.py --dry-run
+python scripts/run_phase_a_groups_05_30.py
+```
+
+The runner uses each group's checked-in manifest, seed `41 + group number`,
+and a separate `e2_groupXX_formal` output directory. It waits for one group
+to finish all 100 epochs before launching the next. Re-running the same
+command skips groups with complete, matching output; a failed or partial
+group stops the queue for inspection and is never overwritten. The runner
+does not evaluate the test set or select the winning group.
