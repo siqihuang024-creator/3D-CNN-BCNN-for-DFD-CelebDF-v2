@@ -1,5 +1,8 @@
-# Pilot protocol: video-path-disjoint split, fixed balanced validation/test,
-# 60 independent method-diverse fake groups. Run with --experiment E2_celeb.
+# Phase-A protocol: video-path-disjoint split, fixed balanced validation/test,
+# Formal runs use groups 01-30 of the 60 precomputed, disjoint fake groups.
+# Every group is method-diverse. Run with --experiment E2_celeb.
+# The three 100-epoch pilots fixed the formal budget at 100 epochs without
+# early stopping; select each run's checkpoint by validation AUROC.
 seed: 42
 device: cuda
 data:
@@ -46,8 +49,8 @@ model:
   deterministic_hidden_dim: 0
   dropout: 0.2
 train:
-  run_dir: artifacts/v2_video_disjoint/e2_group01_pilot
-  epochs: 60
+  run_dir: artifacts/v2_video_disjoint/e2_group04_formal
+  epochs: 100
   physical_batch_size: 8
   epoch_protocol: balanced_pool_pass
   gradient_accumulation_steps: 1
